@@ -189,3 +189,78 @@ test('evaluateFlipVerdict classifies GOOD FLIP, THIN MARGIN, and LOSS correctly'
   assert.equal(lossVerdict.tone, 'negative');
   assert.match(lossVerdict.reason, /£25\.72 below break-even/);
 });
+
+test('enrichListingTitle appends Vinted category to vague brand-only titles without duplicating brand', () => {
+  const golf = core.enrichListingTitle('Callaway', {
+    brand: 'Callaway',
+    category: 'Golf balls Callaway Golf balls'
+  });
+  assert.equal(golf.title, 'Callaway Golf balls');
+  assert.equal(golf.enriched, true);
+
+  const tshirt = core.enrichListingTitle('Relaxed fit T-shirt', {
+    brand: 'AllSaints',
+    category: 'T-shirts'
+  });
+  assert.equal(tshirt.title, 'AllSaints Relaxed fit T-shirt');
+});
+
+test('filterRelevantComps excludes golf clubs/drivers when searching Callaway Golf balls', () => {
+  const mixedItems = [
+    { title: 'Callaway RAZR X 9-Iron Golf Iron', price: 24.02, currency: 'GBP' },
+    { title: 'Callaway ERC+ Fusion Driver RH', price: 51.84, currency: 'GBP' },
+    { title: 'Callaway Jaws MD5 wedge set', price: 129.61, currency: 'GBP' },
+    { title: '24 Callaway Supersoft Golf Balls Grade A', price: 15.0, currency: 'GBP' },
+    { title: 'Callaway Warbird Golf Balls x20 Used', price: 14.0, currency: 'GBP' },
+    { title: 'Callaway Chrome Soft Golf Balls 18 pack', price: 17.5, currency: 'GBP' }
+  ];
+  const summary = core.analyzeSoldComps(mixedItems, {
+    targetCurrency: 'GBP',
+    marketCurrency: 'GBP',
+    query: 'Callaway Golf balls'
+  });
+  assert.equal(summary.count, 3);
+  assert.equal(summary.filteredOutCount, 3);
+  assert.equal(summary.median, 15);
+  assert.equal(summary.samples.length, 3);
+  assert.ok(summary.samples.every((s) => /ball/i.test(s.title)));
+});
+
+test('evaluateFlipVerdict downgrades GOOD FLIP to VERIFY COMPS on broad 1-word query or wide price spread', () => {
+  const calc = core.calculateFlip({
+    buyPrice: 15,
+    inboundShipping: 1.45,
+    outboundShipping: 3.5,
+    resalePrice: 38.99,
+    platform: 'ebay_private',
+    currency: 'GBP'
+  });
+
+  const broadSummary = core.analyzeSoldComps(
+    [
+      { title: 'Callaway Iron', price: 20, currency: 'GBP' },
+      { title: 'Callaway Driver', price: 40, currency: 'GBP' },
+      { title: 'Callaway Wedge Set', price: 60, currency: 'GBP' }
+    ],
+    { targetCurrency: 'GBP', marketCurrency: 'GBP', query: 'Callaway' }
+  );
+  assert.equal(broadSummary.riskFlags.broadQuery, true);
+  assert.equal(broadSummary.riskFlags.highSpread, true);
+
+  const verdict = core.evaluateFlipVerdict(calc, broadSummary, 'GBP');
+  assert.equal(verdict.code, 'verify_comps');
+  assert.equal(verdict.tone, 'warning');
+  assert.equal(verdict.label, 'VERIFY COMPS');
+});
+
+test('buildEbaySoldCompsUrl includes LH_ItemCondition for used and new conditions', () => {
+  const usedUrl = core.buildEbaySoldCompsUrl('Callaway Golf balls', 'ebay_uk', 8, 'used');
+  assert.match(usedUrl, /LH_ItemCondition=3000/);
+
+  const newUrl = core.buildEbaySoldCompsUrl('Callaway Golf balls', 'ebay_uk', 8, 'new');
+  assert.match(newUrl, /LH_ItemCondition=1000/);
+
+  const anyUrl = core.buildEbaySoldCompsUrl('Callaway Golf balls', 'ebay_uk', 8, 'any');
+  assert.doesNotMatch(anyUrl, /LH_ItemCondition=/);
+});
+

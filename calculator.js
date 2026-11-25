@@ -579,10 +579,110 @@
       .join(' ');
   }
 
+  const GENERIC_CATEGORY_WORDS = new Set([
+    'all', 'other', 'misc', 'item', 'items', 'men', 'women', 'kids', 'unisex',
+    'home', 'sports', 'entertainment', 'clothing', 'accessories', 'electronics',
+    'hobbies', 'collectables', 'collectibles', 'fashion', 'goods', 'general',
+    'and', 'or', 'for', 'the', 'of', 'in', 'with', 'to', 'a', 'an', 'on', '&'
+  ]);
+
+  function normalizeStem(word) {
+    const w = String(word || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\u00c0-\u024f]/g, '');
+    if (w.length > 4 && w.endsWith('ies')) {
+      return w.slice(0, -3) + 'y';
+    }
+    if (w.length > 3 && w.endsWith('es') && /(?:s|x|z|ch|sh)es$/.test(w)) {
+      return w.slice(0, -2);
+    }
+    if (w.length > 3 && w.endsWith('s') && !w.endsWith('ss')) {
+      return w.slice(0, -1);
+    }
+    return w;
+  }
+
+  /**
+   * Enrich a short or vague listing title (e.g. Vinted title "Callaway") with
+   * detected Brand and Category Breadcrumb (e.g. "Callaway Golf balls") to prevent
+   * matching unrelated products on eBay.
+   */
+  function enrichListingTitle(rawTitle, context) {
+    const base = String(rawTitle || '').replace(/\s+/g, ' ').trim();
+    const ctx = context || {};
+    const brand = String(ctx.brand || '').replace(/\s+/g, ' ').trim();
+    const category = String(ctx.category || '').replace(/\s+/g, ' ').trim();
+
+    if (!base && !brand && !category) {
+      return { title: '', enriched: false, addedParts: [] };
+    }
+
+    const parts = base ? [base] : [];
+    const existingStems = new Set(
+      base
+        .split(/\s+/)
+        .map(normalizeStem)
+        .filter(Boolean)
+    );
+    const addedParts = [];
+
+    // Prepend Brand if missing from title
+    if (brand && !/^(?:no brand|unbranded|other|n\/a)$/i.test(brand)) {
+      const brandTokens = brand.split(/\s+/).filter(Boolean);
+      const brandStems = brandTokens.map(normalizeStem).filter(Boolean);
+      const hasBrand =
+        brandStems.length > 0 && brandStems.every((st) => existingStems.has(st));
+      if (!hasBrand) {
+        parts.unshift(brand);
+        for (const st of brandStems) {
+          existingStems.add(st);
+        }
+        addedParts.push('Brand');
+      }
+    }
+
+    // Append specific product-type words from Category if missing from title
+    // (especially important when seller wrote only brand or <= 4 words)
+    if (category) {
+      const catTokens = category
+        .replace(/(?:\s+[-–—]+\s+|[|/>·•]+)/g, ' ')
+        .split(/\s+/)
+        .map((t) => t.trim())
+        .filter(Boolean);
+
+      const missingCatTokens = [];
+      for (const tok of catTokens) {
+        const lower = tok.toLowerCase();
+        const stem = normalizeStem(tok);
+        if (!stem || stem.length < 2 || GENERIC_CATEGORY_WORDS.has(lower)) {
+          continue;
+        }
+        if (existingStems.has(stem)) {
+          continue;
+        }
+        existingStems.add(stem);
+        missingCatTokens.push(tok);
+      }
+
+      const baseWordCount = base ? base.split(/\s+/).filter(Boolean).length : 0;
+      if (missingCatTokens.length > 0 && (baseWordCount <= 4 || missingCatTokens.length <= 2)) {
+        parts.push(missingCatTokens.slice(0, 3).join(' '));
+        addedParts.push('Category');
+      }
+    }
+
+    return {
+      title: parts.join(' ').replace(/\s+/g, ' ').trim(),
+      enriched: addedParts.length > 0,
+      addedParts
+    };
+  }
+
   /**
    * Build the eBay Sold & Completed listings URL for any supported eBay market.
+   * condition: 'any' | 'used' | 'new'
    */
-  function buildEbaySoldCompsUrl(rawTitle, marketId, maxWords) {
+  function buildEbaySoldCompsUrl(rawTitle, marketId, maxWords, condition) {
     const market = EBAY_MARKETS[marketId] || EBAY_MARKETS.ebay_uk;
     const query = cleanTitleForSearch(rawTitle, maxWords);
     const params = new URLSearchParams({
@@ -591,6 +691,11 @@
       LH_Complete: '1',
       _sop: '13'
     });
+    if (condition === 'used') {
+      params.set('LH_ItemCondition', '3000');
+    } else if (condition === 'new') {
+      params.set('LH_ItemCondition', '1000');
+    }
     return `https://${market.domain}/sch/i.html?${params.toString()}`;
   }
 
@@ -822,29 +927,146 @@
     return round2(sorted[base]);
   }
 
+  function getCoreQueryStems(query) {
+    const cleaned = cleanTitleForSearch(query || '', 8);
+    if (!cleaned) {
+      return [];
+    }
+    const stems = [];
+    const seen = new Set();
+    for (const tok of cleaned.split(/\s+/)) {
+      const lower = tok.toLowerCase();
+      const stem = normalizeStem(tok);
+      if (!stem || stem.length < 2 || GENERIC_CATEGORY_WORDS.has(lower) || seen.has(stem)) {
+        continue;
+      }
+      seen.add(stem);
+      stems.push(stem);
+    }
+    return stems;
+  }
+
   /**
-   * Compute cleaned sold-price statistics (IQR outlier trimming, P25 / Median / P75 / Mean).
+   * Filter sold comps to reject unrelated product categories (e.g. golf clubs when searching golf balls).
+   */
+  function filterRelevantComps(rawItems, query) {
+    const items = Array.isArray(rawItems) ? rawItems : [];
+    const coreStems = getCoreQueryStems(query);
+
+    if (coreStems.length < 2 || items.length === 0) {
+      return { items, filteredOutCount: 0, relevanceFallback: false, queryWordCount: coreStems.length };
+    }
+
+    const titledItems = items.filter((it) => typeof it === 'object' && it && it.title);
+    if (titledItems.length === 0) {
+      return { items, filteredOutCount: 0, relevanceFallback: false, queryWordCount: coreStems.length };
+    }
+
+    const scored = items.map((entry) => {
+      const title = typeof entry === 'object' && entry && entry.title ? entry.title : '';
+      const titleStems = new Set(
+        title
+          .replace(/[^\w\s\u00c0-\u024f]/g, ' ')
+          .split(/\s+/)
+          .map(normalizeStem)
+          .filter(Boolean)
+      );
+      let hits = 0;
+      for (const st of coreStems) {
+        if (titleStems.has(st)) {
+          hits += 1;
+        }
+      }
+      return { entry, hits };
+    });
+
+    // Prefer items matching ALL core stems when at least 3 exact matches exist
+    const allMatches = scored.filter((s) => s.hits === coreStems.length).map((s) => s.entry);
+    if (allMatches.length >= 3) {
+      return {
+        items: allMatches,
+        filteredOutCount: items.length - allMatches.length,
+        relevanceFallback: false,
+        queryWordCount: coreStems.length
+      };
+    }
+
+    // Otherwise require matching at least 60% of core stems (minimum 2)
+    const minHits = Math.max(2, Math.ceil(coreStems.length * 0.6));
+    const strongMatches = scored.filter((s) => s.hits >= minHits).map((s) => s.entry);
+    if (strongMatches.length >= 1) {
+      return {
+        items: strongMatches,
+        filteredOutCount: items.length - strongMatches.length,
+        relevanceFallback: false,
+        queryWordCount: coreStems.length
+      };
+    }
+
+    // Fallback to raw items if nothing met threshold, but flag relevanceFallback so UI warns user
+    return {
+      items,
+      filteredOutCount: 0,
+      relevanceFallback: true,
+      queryWordCount: coreStems.length
+    };
+  }
+
+  function pickRepresentativeSamples(sortedEntries, maxCount) {
+    const limit = maxCount || 3;
+    const titled = sortedEntries.filter((x) => x.title);
+    if (titled.length === 0) {
+      return [];
+    }
+    if (titled.length <= limit) {
+      return titled.map((x) => ({ title: x.title, price: x.inTarget }));
+    }
+    const indices = [
+      Math.floor((titled.length - 1) * 0.25),
+      Math.floor((titled.length - 1) * 0.5),
+      Math.floor((titled.length - 1) * 0.75)
+    ];
+    const picked = [];
+    const used = new Set();
+    for (const idx of indices) {
+      if (!used.has(idx) && titled[idx]) {
+        used.add(idx);
+        picked.push({ title: titled[idx].title, price: titled[idx].inTarget });
+      }
+    }
+    return picked;
+  }
+
+  /**
+   * Compute cleaned sold-price statistics (relevance filtering, IQR outlier trimming,
+   * P25 / Median / P75 / Mean, matched samples, and valuation risk flags).
    */
   function analyzeSoldComps(rawItems, options) {
     const opts = options || {};
     const targetCurrency = String(opts.targetCurrency || 'GBP').toUpperCase();
     const marketCurrency = String(opts.marketCurrency || targetCurrency).toUpperCase();
     const fxRates = opts.fxRates || FALLBACK_FX_RATES;
+    const query = opts.query || '';
+
+    const rel = query
+      ? filterRelevantComps(rawItems, query)
+      : { items: rawItems || [], filteredOutCount: 0, relevanceFallback: false, queryWordCount: 2 };
 
     const converted = [];
-    for (const entry of rawItems || []) {
+    for (const entry of rel.items || []) {
       const rawPrice = typeof entry === 'number' ? entry : entry && entry.price;
       const itemCurr =
         typeof entry === 'object' && entry && entry.currency
           ? entry.currency
           : marketCurrency;
+      const title = typeof entry === 'object' && entry && entry.title ? entry.title : '';
       if (!Number.isFinite(rawPrice) || rawPrice <= 0) {
         continue;
       }
       const inTarget = convertCurrency(rawPrice, itemCurr, targetCurrency, fxRates);
       const inMarket = convertCurrency(rawPrice, itemCurr, marketCurrency, fxRates);
       if (inTarget !== null && inTarget > 0) {
-        converted.push({ inTarget, inMarket });
+        converted.push({ inTarget, inMarket, title });
       }
     }
 
@@ -853,6 +1075,7 @@
       return {
         count: 0,
         rawCount: 0,
+        filteredOutCount: rel.filteredOutCount,
         currency: targetCurrency,
         marketCurrency,
         min: null,
@@ -862,6 +1085,13 @@
         max: null,
         mean: null,
         marketMedian: null,
+        spreadRatio: null,
+        samples: [],
+        riskFlags: {
+          broadQuery: Boolean(query && rel.queryWordCount <= 1),
+          highSpread: false,
+          relevanceFallback: rel.relevanceFallback
+        },
         confidence: 'none'
       };
     }
@@ -891,26 +1121,54 @@
     const marketVals = filtered.map((x) => x.inMarket).sort((a, b) => a - b);
     const sum = vals.reduce((acc, v) => acc + v, 0);
     const count = vals.length;
-    const confidence = count >= 8 ? 'high' : count >= 3 ? 'medium' : 'low';
+    const p25 = quantile(vals, 0.25);
+    const median = quantile(vals, 0.5);
+    const p75 = quantile(vals, 0.75);
+    const minVal = round2(vals[0]);
+    const maxVal = round2(vals[count - 1]);
+    const spreadRatio = p25 && p25 > 0 && p75 ? round2(p75 / p25) : null;
+    const minMaxRatio = minVal > 0 ? round2(maxVal / minVal) : null;
+    const broadQuery = Boolean(query && rel.queryWordCount <= 1);
+    const highSpread = Boolean(
+      (count >= 3 && spreadRatio !== null && spreadRatio >= 2.3) ||
+        (count >= 3 && count <= 4 && minMaxRatio !== null && minMaxRatio >= 2.8)
+    );
+    const confidence =
+      broadQuery || highSpread || rel.relevanceFallback
+        ? 'low'
+        : count >= 8
+          ? 'high'
+          : count >= 3
+            ? 'medium'
+            : 'low';
 
     return {
       count,
       rawCount,
+      filteredOutCount: rel.filteredOutCount,
       currency: targetCurrency,
       marketCurrency,
       min: round2(vals[0]),
-      p25: quantile(vals, 0.25),
-      median: quantile(vals, 0.5),
-      p75: quantile(vals, 0.75),
+      p25,
+      median,
+      p75,
       max: round2(vals[count - 1]),
       mean: round2(sum / count),
       marketMedian: quantile(marketVals, 0.5),
+      spreadRatio,
+      samples: pickRepresentativeSamples(filtered, 3),
+      riskFlags: {
+        broadQuery,
+        highSpread,
+        relevanceFallback: rel.relevanceFallback
+      },
       confidence
     };
   }
 
   /**
-   * Evaluate whether the product is profitable to flip.
+   * Evaluate whether the product is profitable to flip, guarding against
+   * misleading broad queries or high-variance mixed-product comps.
    */
   function evaluateFlipVerdict(calcResult, compsSummary, currencyCode, fxRates) {
     const curr = String(currencyCode || (calcResult && calcResult.currency) || 'GBP').toUpperCase();
@@ -945,6 +1203,23 @@
       };
     }
 
+    // Risk Guard: never show GOOD FLIP blindly when query is too broad or comps span mixed product types
+    const flags = compsSummary && compsSummary.riskFlags;
+    if (flags && (flags.broadQuery || flags.highSpread || flags.relevanceFallback)) {
+      let reason = 'Mixed comps — check matched titles below';
+      if (flags.broadQuery) {
+        reason = '1-word search too broad — add item type';
+      } else if (flags.highSpread) {
+        reason = `Wide price spread (${formatMoney(compsSummary.p25, curr)}–${formatMoney(compsSummary.p75, curr)}) — verify`;
+      }
+      return {
+        code: 'verify_comps',
+        tone: 'warning',
+        label: 'VERIFY COMPS',
+        reason
+      };
+    }
+
     if (roi >= 20 && profitUsd >= 5) {
       return {
         code: 'good_flip',
@@ -976,6 +1251,7 @@
     parsePrice,
     calculateFlip,
     cleanTitleForSearch,
+    enrichListingTitle,
     buildEbaySoldCompsUrl,
     formatMoney,
     formatGBP,
@@ -983,6 +1259,7 @@
     parseEbaySoldDocument,
     parseEbaySoldHtmlString,
     parseEbaySoldHtml,
+    filterRelevantComps,
     analyzeSoldComps,
     evaluateFlipVerdict
   };

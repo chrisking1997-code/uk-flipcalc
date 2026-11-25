@@ -98,13 +98,18 @@ async function getFxRates(forceRefresh) {
   return { ok: false, error: 'FX fetch failed' };
 }
 
-function buildSoldSearchUrl(domain, query) {
+function buildSoldSearchUrl(domain, query, condition) {
   const params = new URLSearchParams({
     _nkw: query,
     LH_Sold: '1',
     LH_Complete: '1',
     _sop: '13'
   });
+  if (condition === 'used') {
+    params.set('LH_ItemCondition', '3000');
+  } else if (condition === 'new') {
+    params.set('LH_ItemCondition', '1000');
+  }
   return `https://${domain}/sch/i.html?${params.toString()}`;
 }
 
@@ -112,16 +117,17 @@ const HTML_FETCH_HEADERS = {
   Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
 };
 
-async function fetchSoldCompsHtml(marketId, query, forceRefresh) {
+async function fetchSoldCompsHtml(marketId, query, forceRefresh, condition) {
   const domain = MARKET_DOMAINS[marketId] || MARKET_DOMAINS.ebay_uk;
   const trimmedQuery = String(query || '').trim();
-  const url = buildSoldSearchUrl(domain, trimmedQuery);
+  const cond = condition === 'used' || condition === 'new' ? condition : 'any';
+  const url = buildSoldSearchUrl(domain, trimmedQuery, cond);
 
   if (!trimmedQuery) {
     return { ok: false, error: 'Empty search query', url };
   }
 
-  const cacheKey = `${marketId}::${trimmedQuery.toLowerCase()}`;
+  const cacheKey = `${marketId}::${cond}::${trimmedQuery.toLowerCase()}`;
   if (!forceRefresh && compsCache.has(cacheKey)) {
     const entry = compsCache.get(cacheKey);
     if (Date.now() - entry.ts < COMPS_TTL_MS) {
@@ -142,8 +148,6 @@ async function fetchSoldCompsHtml(marketId, query, forceRefresh) {
       7500
     );
 
-    // Cold cross-site /sch/i.html requests can return HTTP 403 before eBay sets session cookies.
-    // Initialize the domain session once via the homepage and retry once.
     if (resp.status === 403) {
       try {
         await fetchWithTimeout(
@@ -215,7 +219,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'FETCH_SOLD_COMPS') {
-    fetchSoldCompsHtml(message.marketId, message.query, Boolean(message.forceRefresh))
+    fetchSoldCompsHtml(message.marketId, message.query, Boolean(message.forceRefresh), message.condition)
       .then((res) => sendResponse(res))
       .catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true;

@@ -214,11 +214,25 @@
       }
     }
 
+    const condText = queryFirstText([
+      '.x-item-condition-text .ux-textspans',
+      '[data-testid="x-item-condition-text"]',
+      '.x-item-condition-value'
+    ]);
+    let condition = 'any';
+    if (/\b(?:used|pre-owned|gebraucht|occasion|usato)\b/i.test(condText)) {
+      condition = 'used';
+    } else if (/\b(?:new|brand new|neu|neuf|nuovo)\b/i.test(condText)) {
+      condition = 'new';
+    }
+
     return {
       site: 'ebay',
       siteLabel: SITE_INFO.siteLabel,
       currency: detectedCurrency,
       title,
+      titleEnrichedLabel: '',
+      condition,
       buyPrice: price,
       inboundShipping: shipping !== null ? shipping : 0,
       inboundHint:
@@ -226,21 +240,73 @@
     };
   }
 
+  function extractVintedBreadcrumbCategory() {
+    const breadcrumbSelectors = [
+      'ul.breadcrumbs a',
+      'nav[aria-label*="breadcrumb" i] a',
+      '[class*="breadcrumb" i] a',
+      'main a[href*="/catalog/"]'
+    ];
+
+    for (const sel of breadcrumbSelectors) {
+      const links = Array.from(document.querySelectorAll(sel));
+      if (links.length === 0) {
+        continue;
+      }
+      const labels = links
+        .filter((a) => !a.closest('header, nav[aria-label*="main" i]'))
+        .map((a) => (a.innerText || a.textContent || '').replace(/\s+/g, ' ').trim())
+        .filter((txt) => txt && txt.length >= 2 && txt.length <= 50 && !/^(?:home|catalog|catalogue)$/i.test(txt));
+
+      if (labels.length > 0) {
+        // Prefer the last 1-2 breadcrumb items (e.g. "Golf balls" / "Callaway Golf balls")
+        return labels.slice(-2).join(' ');
+      }
+    }
+    return '';
+  }
+
   /**
-   * Extract Title, Item Price (£), Buyer Protection Fee (£), and Shipping (£) from vinted.co.uk/items/*
+   * Extract Title (enriched with Brand & Category Breadcrumb), Condition, Item Price (£),
+   * Buyer Protection Fee (£), and Shipping (£) from vinted.co.uk/items/*
    */
   function extractVintedData() {
-    let title = queryFirstText([
+    let rawTitle = queryFirstText([
       '[data-testid="item-page-summary-plugin"] h1',
       'h1.web_ui__Text__title',
       'main h1',
       'h1'
     ]);
 
-    if (!title) {
+    if (!rawTitle) {
       const ogTitle = document.querySelector('meta[property="og:title"]');
-      const rawTitle = (ogTitle && ogTitle.content) || document.title || '';
-      title = rawTitle.replace(/\s*\|\s*Vinted\s*$/i, '').trim();
+      const fallbackRaw = (ogTitle && ogTitle.content) || document.title || '';
+      rawTitle = fallbackRaw.replace(/\s*\|\s*Vinted\s*$/i, '').trim();
+    }
+
+    const brand = queryFirstText([
+      '[data-testid="item-attributes-brand"] [itemprop="name"]',
+      '[data-testid="item-attributes-brand"] a',
+      '[itemprop="brand"]',
+      '[data-testid="item-page-summary-plugin"] a[href*="/brand/"]',
+      'main a[href*="/brand/"]'
+    ]);
+
+    const category = extractVintedBreadcrumbCategory();
+    const enriched = core.enrichListingTitle(rawTitle, { brand, category });
+    const title = enriched.title || rawTitle;
+    const titleEnrichedLabel = enriched.enriched ? `Auto + ${enriched.addedParts.join('/')}` : '';
+
+    const condText = queryFirstText([
+      '[data-testid="item-attributes-status"] [itemprop="itemCondition"]',
+      '[data-testid="item-attributes-status"]',
+      '[data-testid="item-page-summary-plugin"]'
+    ]);
+    let condition = 'any';
+    if (/\b(?:new with tags|new without tags|brand new)\b/i.test(condText)) {
+      condition = 'new';
+    } else if (/\b(?:very good|good|satisfactory)\b/i.test(condText)) {
+      condition = 'used';
     }
 
     let itemPrice = null;
@@ -293,6 +359,8 @@
       siteLabel: 'Vinted UK',
       currency: 'GBP',
       title,
+      titleEnrichedLabel,
+      condition,
       buyPrice: itemPrice,
       inboundShipping: inboundTotal,
       inboundHint: hintParts.length > 0 ? hintParts.join(' + ') : 'Manual / £0.00'
@@ -338,7 +406,8 @@
     });
   }
 
-  async function fetchSoldHtmlDirectOrBg(market, query, forceRefresh) {
+  async function fetchSoldHtmlDirectOrBg(market, query, forceRefresh, condition) {
+    const cond = condition === 'used' || condition === 'new' ? condition : 'any';
     const sameOrigin = window.location.hostname.toLowerCase() === market.domain.toLowerCase();
     if (sameOrigin) {
       const params = new URLSearchParams({
@@ -347,6 +416,11 @@
         LH_Complete: '1',
         _sop: '13'
       });
+      if (cond === 'used') {
+        params.set('LH_ItemCondition', '3000');
+      } else if (cond === 'new') {
+        params.set('LH_ItemCondition', '1000');
+      }
       const url = `/sch/i.html?${params.toString()}`;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 7000);
@@ -376,6 +450,7 @@
         type: 'FETCH_SOLD_COMPS',
         marketId: market.id,
         query,
+        condition: cond,
         forceRefresh: Boolean(forceRefresh)
       },
       16000
@@ -662,14 +737,17 @@
                 <span class="fc-market-title">Market Valuation</span>
                 <span class="fc-count-pill" id="fc-comps-count" data-confidence="none">Checking...</span>
               </div>
-              <button type="button" class="fc-icon-btn fc-icon-btn-sm" id="fc-comps-refresh" title="Refresh Sold Comps now" aria-label="Refresh Sold Comps">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-                  <path d="M3 3v5h5"/>
-                  <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
-                  <path d="M16 16h5v5"/>
-                </svg>
-              </button>
+              <div class="fc-market-head-right">
+                <button type="button" class="fc-cond-btn" id="fc-cond-btn" data-cond="any" title="Filter eBay comps by condition (click to cycle Any / Used / New)">Any</button>
+                <button type="button" class="fc-icon-btn fc-icon-btn-sm" id="fc-comps-refresh" title="Refresh Sold Comps now" aria-label="Refresh Sold Comps">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                    <path d="M3 3v5h5"/>
+                    <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+                    <path d="M16 16h5v5"/>
+                  </svg>
+                </button>
+              </div>
             </div>
 
             <div class="fc-comps-status" id="fc-comps-status">
@@ -693,6 +771,8 @@
                 <span class="fc-tier-price" id="fc-tier-p75-val">—</span>
               </button>
             </div>
+
+            <div class="fc-samples" id="fc-samples"></div>
 
             <div class="fc-fx-note" id="fc-fx-note"></div>
           </div>
@@ -768,6 +848,7 @@
       customFeeRow: shadow.getElementById('fc-custom-fee-row'),
       customFeeInput: shadow.getElementById('fc-custom-fee'),
       compsCount: shadow.getElementById('fc-comps-count'),
+      condBtn: shadow.getElementById('fc-cond-btn'),
       compsRefreshBtn: shadow.getElementById('fc-comps-refresh'),
       compsStatus: shadow.getElementById('fc-comps-status'),
       compsSpinner: shadow.getElementById('fc-comps-spinner'),
@@ -779,6 +860,7 @@
       tierP25Val: shadow.getElementById('fc-tier-p25-val'),
       tierMedianVal: shadow.getElementById('fc-tier-median-val'),
       tierP75Val: shadow.getElementById('fc-tier-p75-val'),
+      samplesBox: shadow.getElementById('fc-samples'),
       fxNote: shadow.getElementById('fc-fx-note'),
       verdictBox: shadow.getElementById('fc-verdict'),
       verdictBadge: shadow.getElementById('fc-verdict-badge'),
@@ -800,10 +882,12 @@
       buyPrice: false,
       inboundShipping: false,
       resalePrice: false,
-      outboundShipping: false
+      outboundShipping: false,
+      condition: false
     };
 
     let workingCurrency = SITE_INFO.currency || 'GBP';
+    let selectedCondition = 'any';
     let fxRates = Object.assign({}, core.FALLBACK_FX_RATES);
     let fxIsLive = false;
     let rawCompsItems = [];
@@ -889,6 +973,35 @@
       els.fxNote.classList.add('fc-visible');
     }
 
+    function renderConditionButton() {
+      const labels = { any: 'Any', used: 'Used', new: 'New' };
+      els.condBtn.dataset.cond = selectedCondition;
+      els.condBtn.textContent = labels[selectedCondition] || 'Any';
+    }
+
+    function renderSampleComps(summary) {
+      els.samplesBox.textContent = '';
+      if (!summary || !Array.isArray(summary.samples) || summary.samples.length === 0) {
+        els.samplesBox.classList.remove('fc-visible');
+        return;
+      }
+      for (const sample of summary.samples.slice(0, 3)) {
+        const row = document.createElement('div');
+        row.className = 'fc-sample-row';
+        const titleSpan = document.createElement('span');
+        titleSpan.className = 'fc-sample-title';
+        titleSpan.textContent = sample.title;
+        titleSpan.title = sample.title;
+        const priceSpan = document.createElement('span');
+        priceSpan.className = 'fc-sample-price';
+        priceSpan.textContent = core.formatMoney(sample.price, workingCurrency);
+        row.appendChild(titleSpan);
+        row.appendChild(priceSpan);
+        els.samplesBox.appendChild(row);
+      }
+      els.samplesBox.classList.add('fc-visible');
+    }
+
     function applySummaryToUi(summary, allowAutoFill) {
       lastCompsSummary = summary;
       const market = getSelectedMarket();
@@ -897,6 +1010,7 @@
 
       if (!summary || summary.count === 0) {
         els.tierGrid.classList.add('fc-hidden');
+        renderSampleComps(null);
         els.compsCount.textContent = '0 sold';
         els.compsCount.dataset.confidence = 'none';
         if (!els.resaleInput.value) {
@@ -914,6 +1028,7 @@
       els.tierP75Val.textContent = core.formatMoney(summary.p75, workingCurrency);
       els.tierGrid.classList.remove('fc-hidden');
       els.compsStatus.style.display = 'none';
+      renderSampleComps(summary);
 
       if (allowAutoFill && summary.median !== null) {
         const chosenVal =
@@ -952,6 +1067,7 @@
       els.compsCount.textContent = badgeText;
       els.compsCount.dataset.confidence = 'none';
       els.tierGrid.classList.add('fc-hidden');
+      renderSampleComps(null);
       els.compsRefreshBtn.classList.remove('fc-spinning');
       els.resaleInput.placeholder = 'Enter price';
       if (!els.resaleInput.value) {
@@ -982,11 +1098,12 @@
       }
 
       rawCompsItems = synced.items;
-      lastQueriedKey = `${market.id}::${primaryQuery.toLowerCase()}`;
+      lastQueriedKey = `${market.id}::${selectedCondition}::${primaryQuery.toLowerCase()}`;
       const summary = core.analyzeSoldComps(synced.items, {
         targetCurrency: workingCurrency,
         marketCurrency: market.currency,
-        fxRates
+        fxRates,
+        query: primaryQuery
       });
       applySummaryToUi(summary, forceFill || !dirty.resalePrice);
       return true;
@@ -1004,12 +1121,13 @@
         return;
       }
 
-      const requestKey = `${market.id}::${primaryQuery.toLowerCase()}`;
+      const requestKey = `${market.id}::${selectedCondition}::${primaryQuery.toLowerCase()}`;
       if (!opts.forceRefresh && requestKey === lastQueriedKey && rawCompsItems.length > 0) {
         const summary = core.analyzeSoldComps(rawCompsItems, {
           targetCurrency: workingCurrency,
           marketCurrency: market.currency,
-          fxRates
+          fxRates,
+          query: primaryQuery
         });
         applySummaryToUi(summary, Boolean(opts.allowAutoFill));
         return;
@@ -1027,7 +1145,12 @@
       lastQueriedKey = requestKey;
       setCompsLoadingState(`Checking ${market.name} sold prices...`);
 
-      const resp = await fetchSoldHtmlDirectOrBg(market, primaryQuery, Boolean(opts.forceRefresh));
+      const resp = await fetchSoldHtmlDirectOrBg(
+        market,
+        primaryQuery,
+        Boolean(opts.forceRefresh),
+        selectedCondition
+      );
 
       if (seq !== compsRequestSeq) {
         return;
@@ -1045,6 +1168,7 @@
       }
 
       let parsed = core.parseEbaySoldHtml(resp.html, market.currency);
+      let usedQuery = primaryQuery;
 
       if (parsed.blocked) {
         setCompsMessageState('Verify', 'Click button below to view & auto-sync prices');
@@ -1054,7 +1178,12 @@
       // If strict 8-word title had < 2 sold matches, retry once with broader 4-word core query
       if (parsed.items.length < 2 && broaderQuery && broaderQuery.toLowerCase() !== primaryQuery.toLowerCase()) {
         setCompsLoadingState(`Broadening search on ${market.name}...`);
-        const retryResp = await fetchSoldHtmlDirectOrBg(market, broaderQuery, Boolean(opts.forceRefresh));
+        const retryResp = await fetchSoldHtmlDirectOrBg(
+          market,
+          broaderQuery,
+          Boolean(opts.forceRefresh),
+          selectedCondition
+        );
 
         if (seq !== compsRequestSeq) {
           return;
@@ -1073,6 +1202,7 @@
           }
           if (retryParsed.items.length > parsed.items.length) {
             parsed = retryParsed;
+            usedQuery = broaderQuery;
           }
         }
       }
@@ -1088,7 +1218,8 @@
       const summary = core.analyzeSoldComps(parsed.items, {
         targetCurrency: workingCurrency,
         marketCurrency: market.currency,
-        fxRates
+        fxRates,
+        query: usedQuery
       });
 
       const shouldFill = opts.forceAutoFill || (!dirty.resalePrice && opts.allowAutoFill !== false);
@@ -1167,6 +1298,7 @@
         dirty.buyPrice = false;
         dirty.inboundShipping = false;
         dirty.resalePrice = false;
+        dirty.condition = false;
       }
 
       const data = extractPageData(fxRates);
@@ -1189,9 +1321,14 @@
 
       if (!dirty.title && data.title) {
         els.titleInput.value = data.title;
-        els.titleStatus.textContent = 'Auto-detected';
+        els.titleStatus.textContent = data.titleEnrichedLabel || 'Auto-detected';
       } else if (!dirty.title && !els.titleInput.value) {
         els.titleStatus.textContent = 'Manual entry';
+      }
+
+      if (!dirty.condition && data.condition) {
+        selectedCondition = data.condition;
+        renderConditionButton();
       }
 
       if (!dirty.buyPrice && data.buyPrice !== null) {
@@ -1272,6 +1409,18 @@
       fetchAndAnalyzeComps({ forceRefresh: false, forceAutoFill: true });
     });
 
+    els.condBtn.addEventListener('click', () => {
+      const order = ['any', 'used', 'new'];
+      const nextIdx = (order.indexOf(selectedCondition) + 1) % order.length;
+      selectedCondition = order[nextIdx];
+      dirty.condition = true;
+      dirty.resalePrice = false;
+      rawCompsItems = [];
+      lastQueriedKey = '';
+      renderConditionButton();
+      fetchAndAnalyzeComps({ forceRefresh: false, forceAutoFill: true });
+    });
+
     els.platformSelect.addEventListener('change', recalculate);
     els.customFeeInput.addEventListener('input', recalculate);
 
@@ -1318,11 +1467,12 @@
     els.compsBtn.addEventListener('click', () => {
       const title = els.titleInput.value.trim();
       const market = getSelectedMarket();
-      const url = core.buildEbaySoldCompsUrl(title, market.id);
+      const url = core.buildEbaySoldCompsUrl(title, market.id, 8, selectedCondition);
       window.open(url, '_blank', 'noopener,noreferrer');
     });
 
     applyCurrencySymbols();
+    renderConditionButton();
     applyMinimizedState();
 
     // Load live FX rates in background
@@ -1335,7 +1485,8 @@
           const summary = core.analyzeSoldComps(rawCompsItems, {
             targetCurrency: workingCurrency,
             marketCurrency: market.currency,
-            fxRates
+            fxRates,
+            query: core.cleanTitleForSearch(els.titleInput.value.trim(), 8)
           });
           applySummaryToUi(summary, !dirty.resalePrice);
         } else {

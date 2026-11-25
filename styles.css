@@ -471,6 +471,76 @@
   display: block;
 }
 
+.fc-market-head-right {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.fc-cond-btn {
+  appearance: none;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(30, 41, 59, 0.7);
+  color: #cbd5e1;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.fc-cond-btn:hover {
+  background: #334155;
+  color: #f8fafc;
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+.fc-cond-btn[data-cond="used"],
+.fc-cond-btn[data-cond="new"] {
+  background: rgba(56, 189, 248, 0.14);
+  border-color: rgba(56, 189, 248, 0.35);
+  color: #7dd3fc;
+}
+
+.fc-samples {
+  display: none;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.fc-samples.fc-visible {
+  display: flex;
+}
+
+.fc-sample-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+.fc-sample-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.fc-sample-price {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #cbd5e1;
+  flex-shrink: 0;
+}
+
 /* Results & Verdict Panel */
 .fc-results {
   background: rgba(15, 23, 42, 0.9);
