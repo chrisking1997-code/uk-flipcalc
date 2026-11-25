@@ -103,70 +103,70 @@
   const PLATFORMS = {
     ebay_private: {
       id: 'ebay_private',
-      label: 'eBay UK Private (0% fee)',
+      label: 'UK Private (0%)',
       pctFee: 0,
       fixedFee: 0,
       fixedCurrency: 'GBP'
     },
     ebay_business: {
       id: 'ebay_business',
-      label: 'eBay UK Business (12.8% + £0.30)',
+      label: 'UK Biz (12.8%+30p)',
       pctFee: 12.8,
       fixedFee: 0.30,
       fixedCurrency: 'GBP'
     },
     ebay_us_standard: {
       id: 'ebay_us_standard',
-      label: 'eBay US Standard (13.25% + $0.30)',
+      label: 'US Std (13.25%)',
       pctFee: 13.25,
       fixedFee: 0.30,
       fixedCurrency: 'USD'
     },
     ebay_de_private: {
       id: 'ebay_de_private',
-      label: 'eBay DE Private (0% fee)',
+      label: 'DE Private (0%)',
       pctFee: 0,
       fixedFee: 0,
       fixedCurrency: 'EUR'
     },
     ebay_de_business: {
       id: 'ebay_de_business',
-      label: 'eBay DE Business (12% + €0.35)',
+      label: 'DE Biz (12%+35c)',
       pctFee: 12.0,
       fixedFee: 0.35,
       fixedCurrency: 'EUR'
     },
     ebay_au_standard: {
       id: 'ebay_au_standard',
-      label: 'eBay AU Standard (13.4% + A$0.30)',
+      label: 'AU Std (13.4%)',
       pctFee: 13.4,
       fixedFee: 0.30,
       fixedCurrency: 'AUD'
     },
     ebay_fr_private: {
       id: 'ebay_fr_private',
-      label: 'eBay FR Private (5% fee)',
+      label: 'FR Private (5%)',
       pctFee: 5.0,
       fixedFee: 0,
       fixedCurrency: 'EUR'
     },
     ebay_ca_standard: {
       id: 'ebay_ca_standard',
-      label: 'eBay CA Standard (13.25% + C$0.30)',
+      label: 'CA Std (13.25%)',
       pctFee: 13.25,
       fixedFee: 0.30,
       fixedCurrency: 'CAD'
     },
     ebay_it_private: {
       id: 'ebay_it_private',
-      label: 'eBay IT Private (5% fee)',
+      label: 'IT Private (5%)',
       pctFee: 5.0,
       fixedFee: 0,
       fixedCurrency: 'EUR'
     },
     vinted_uk: {
       id: 'vinted_uk',
-      label: 'Vinted UK (0% seller fee)',
+      label: 'Vinted UK (0%)',
       pctFee: 0,
       fixedFee: 0,
       fixedCurrency: 'GBP'

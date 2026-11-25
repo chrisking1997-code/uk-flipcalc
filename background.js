@@ -103,11 +103,14 @@ function buildSoldSearchUrl(domain, query) {
     _nkw: query,
     LH_Sold: '1',
     LH_Complete: '1',
-    _sop: '13',
-    _ipg: '60'
+    _sop: '13'
   });
   return `https://${domain}/sch/i.html?${params.toString()}`;
 }
+
+const HTML_FETCH_HEADERS = {
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+};
 
 async function fetchSoldCompsHtml(marketId, query, forceRefresh) {
   const domain = MARKET_DOMAINS[marketId] || MARKET_DOMAINS.ebay_uk;
@@ -128,15 +131,46 @@ async function fetchSoldCompsHtml(marketId, query, forceRefresh) {
   }
 
   try {
-    const resp = await fetchWithTimeout(
+    let resp = await fetchWithTimeout(
       url,
       {
         method: 'GET',
         credentials: 'include',
-        cache: 'no-store'
+        cache: 'no-store',
+        headers: HTML_FETCH_HEADERS
       },
       7500
     );
+
+    // Cold cross-site /sch/i.html requests can return HTTP 403 before eBay sets session cookies.
+    // Initialize the domain session once via the homepage and retry once.
+    if (resp.status === 403) {
+      try {
+        await fetchWithTimeout(
+          `https://${domain}/`,
+          {
+            method: 'GET',
+            credentials: 'include',
+            cache: 'no-store',
+            headers: HTML_FETCH_HEADERS
+          },
+          5000
+        );
+      } catch (_) {
+        // Ignore warmup network error and still attempt single retry
+      }
+
+      resp = await fetchWithTimeout(
+        url,
+        {
+          method: 'GET',
+          credentials: 'include',
+          cache: 'no-store',
+          headers: HTML_FETCH_HEADERS
+        },
+        7500
+      );
+    }
 
     const finalUrl = resp.url || url;
     if (/splashui\/challenge|\/challenge\b/i.test(finalUrl)) {

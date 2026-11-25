@@ -345,8 +345,7 @@
         _nkw: query,
         LH_Sold: '1',
         LH_Complete: '1',
-        _sop: '13',
-        _ipg: '60'
+        _sop: '13'
       });
       const url = `/sch/i.html?${params.toString()}`;
       const controller = new AbortController();
@@ -379,7 +378,7 @@
         query,
         forceRefresh: Boolean(forceRefresh)
       },
-      9000
+      16000
     );
   }
 
@@ -531,7 +530,7 @@
     const marketOptionsHtml = Object.values(core.EBAY_MARKETS)
       .map(
         (m) =>
-          `<option value="${m.id}"${m.id === defaultMarket.id ? ' selected' : ''}>${m.flag} ${m.name} (${core.getCurrencySymbol(m.currency)})</option>`
+          `<option value="${m.id}"${m.id === defaultMarket.id ? ' selected' : ''}>${m.name} (${core.getCurrencySymbol(m.currency)})</option>`
       )
       .join('');
 
@@ -959,6 +958,7 @@
         els.resaleHint.textContent = 'Manual';
       }
       lastCompsSummary = null;
+      lastQueriedKey = '';
       updateFxNote();
       recalculate();
     }
