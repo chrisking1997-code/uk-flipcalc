@@ -103,14 +103,15 @@ test('cleanTitleForSearch and buildEbaySoldCompsUrl support multiple markets and
   assert.match(deUrl, /_nkw=Nike\+Air\+Max\+90/);
 });
 
-test('parseEbaySoldHtmlString extracts classic .s-item and new .s-card sold prices, skips placeholders and ranges', () => {
+test('parseEbaySoldHtmlString extracts classic .s-item, .s-card, and 2026 .su-card-container sold prices while skipping ranges', () => {
   const sampleHtml = `
     <html><body><ul class="srp-results">
       <li class="s-item"><div class="s-item__title">Shop on eBay</div><span class="s-item__price">£20.00</span></li>
       <li class="s-item"><div class="s-item__title"><span>Run-DMC King Of Rock LP</span></div><span class="s-item__price">£28.50</span></li>
       <li class="s-item"><div class="s-item__title"><span>Run-DMC King Of Rock Vinyl Range</span></div><span class="s-item__price">£15.00 to £45.00</span></li>
       <li class="s-card"><div class="s-card__title">Run-DMC King Of Rock 180g</div><span class="s-card__price">£31.00</span></li>
-      <li class="s-card"><div class="s-card__title">Neues Angebot Run-DMC LP</div><span class="s-card__price">EUR 34,50</span></li>
+      <li class="s-card"><div class="s-card__title">Multi-span Range Card</div><span class="s-card__price">£12.00</span><span class="s-card__price">to</span><span class="s-card__price">£40.00</span></li>
+      <div class="su-card-container"><span class="s-card__title">Run-DMC 2026 Container LP</span><span class="s-card__price">EUR 34,50</span></div>
     </ul></body></html>
   `;
   const parsed = core.parseEbaySoldHtmlString(sampleHtml, 'GBP');
@@ -118,7 +119,7 @@ test('parseEbaySoldHtmlString extracts classic .s-item and new .s-card sold pric
   assert.equal(parsed.items.length, 3);
   assert.deepEqual(parsed.items[0], { title: 'Run-DMC King Of Rock LP', price: 28.5, currency: 'GBP' });
   assert.deepEqual(parsed.items[1], { title: 'Run-DMC King Of Rock 180g', price: 31, currency: 'GBP' });
-  assert.deepEqual(parsed.items[2], { title: 'Run-DMC LP', price: 34.5, currency: 'EUR' });
+  assert.deepEqual(parsed.items[2], { title: 'Run-DMC 2026 Container LP', price: 34.5, currency: 'EUR' });
 
   const blocked = core.parseEbaySoldHtmlString('<html><title>Pardon Our Interruption...</title></html>', 'GBP');
   assert.equal(blocked.blocked, true);

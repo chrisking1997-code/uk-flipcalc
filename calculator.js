@@ -620,25 +620,25 @@
     if (!htmlOrText || typeof htmlOrText !== 'string') {
       return false;
     }
-    return /Pardon Our Interruption|Checking your browser before accessing|\/splashui\/challenge|g-recaptcha|captcha-delivery/i.test(
+    return /Pardon Our Interruption|Checking your browser before accessing|\/splashui\/challenge|g-recaptcha|captcha-delivery|verify you are a human|Please verify yourself to continue/i.test(
       htmlOrText
     );
   }
 
   /**
-   * Parse sold items from a DOM Document (browser DOMParser output).
-   * Supports both classic eBay `.s-item` and newer `.s-card` / `.su-card-container` markup.
+   * Parse sold items from a DOM Document (browser DOMParser or live search page document).
+   * Supports eBay's 2026 `.su-card-container`, `.s-card`, and legacy `.s-item` markup.
    */
   function parseEbaySoldDocument(doc, marketCurrency) {
     const fallbackCurr = String(marketCurrency || 'GBP').toUpperCase();
     if (!doc) {
-      return { blocked: false, items: [] };
+      return { blocked: false, items: [], cardCount: 0 };
     }
 
     const docTitle = (doc.title || '').trim();
-    const bodyTextHead = ((doc.body && doc.body.textContent) || '').slice(0, 2000);
+    const bodyTextHead = ((doc.body && doc.body.textContent) || '').slice(0, 2500);
     if (isBotChallengeHtml(docTitle + ' ' + bodyTextHead)) {
-      return { blocked: true, items: [] };
+      return { blocked: true, items: [], cardCount: 0 };
     }
 
     const items = [];
@@ -648,17 +648,29 @@
       doc.body;
 
     if (!resultsRoot) {
-      return { blocked: false, items: [] };
+      return { blocked: false, items: [], cardCount: 0 };
     }
 
-    const children = resultsRoot.querySelectorAll(
-      'li.s-item, li.s-card, li.srp-river-answer'
+    let nodes = Array.from(
+      resultsRoot.querySelectorAll('li.s-item, li.s-card, li.srp-river-answer')
     );
 
-    for (const node of children) {
+    const hasListItemCards = nodes.some(
+      (n) => n.classList && (n.classList.contains('s-item') || n.classList.contains('s-card'))
+    );
+
+    // 2026 eBay SRP layout: organic cards use div.su-card-container without li.s-item
+    if (!hasListItemCards) {
+      nodes = Array.from(
+        resultsRoot.querySelectorAll('div.su-card-container, li.srp-river-answer, .srp-river-answer')
+      );
+    }
+
+    let cardCount = 0;
+
+    for (const node of nodes) {
       if (node.classList && node.classList.contains('srp-river-answer')) {
-        // eBay inserts "Results matching fewer words" divider as an srp-river-answer.
-        // Stop once we already have solid exact matches so unrelated cheaper items don't pollute median.
+        // Stop at "Results matching fewer words" once we have solid exact matches
         const answerText = (node.textContent || '').toLowerCase();
         if (
           items.length >= 3 &&
@@ -671,16 +683,28 @@
         continue;
       }
 
+      cardCount += 1;
+
       const titleEl = node.querySelector(
-        '.s-item__title, .s-card__title, h3.s-item__title'
+        '.s-item__title, .s-card__title, h3.s-item__title, .su-card-container__header a'
       );
       const rawTitle = titleEl ? (titleEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
       if (!rawTitle || /^shop on ebay$/i.test(rawTitle)) {
         continue;
       }
 
-      const priceEl = node.querySelector('.s-item__price, .s-card__price');
-      const priceText = priceEl ? (priceEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
+      // Range cards on eBay's 2026 layout emit multiple .s-card__price spans (low, "to", high)
+      const priceEls = node.querySelectorAll('.s-item__price, .s-card__price');
+      let priceText = '';
+      if (priceEls.length > 1) {
+        priceText = Array.from(priceEls)
+          .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim())
+          .filter(Boolean)
+          .join(' ');
+      } else if (priceEls.length === 1) {
+        priceText = (priceEls[0].textContent || '').replace(/\s+/g, ' ').trim();
+      }
+
       if (!priceText || isRangePriceText(priceText)) {
         continue;
       }
@@ -692,6 +716,7 @@
 
       const cleanTitle = rawTitle
         .replace(/^(?:New listing|Neues Angebot|Nouvelle annonce|Nuova inserzione)\s*/i, '')
+        .replace(/Opens in a new window or tab$/i, '')
         .trim();
 
       items.push({
@@ -705,7 +730,7 @@
       }
     }
 
-    return { blocked: false, items };
+    return { blocked: false, items, cardCount };
   }
 
   /**
@@ -714,18 +739,28 @@
   function parseEbaySoldHtmlString(html, marketCurrency) {
     const fallbackCurr = String(marketCurrency || 'GBP').toUpperCase();
     if (!html || typeof html !== 'string') {
-      return { blocked: false, items: [] };
+      return { blocked: false, items: [], cardCount: 0 };
     }
-    if (isBotChallengeHtml(html.slice(0, 12000))) {
-      return { blocked: true, items: [] };
+    if (isBotChallengeHtml(html.slice(0, 15000))) {
+      return { blocked: true, items: [], cardCount: 0 };
     }
 
     const items = [];
-    const blockRegex = /<li[^>]*class="[^"]*\b(?:s-item|s-card)\b[^"]*"[^>]*>([\s\S]*?)<\/li>/gi;
-    let match;
+    const startRegex =
+      /<(?:li|div)[^>]*class="[^"]*\b(?:s-item|s-card|su-card-container)\b[^"]*"[^>]*>/gi;
+    const starts = [];
+    let m;
+    while ((m = startRegex.exec(html)) !== null) {
+      starts.push(m.index);
+    }
 
-    while ((match = blockRegex.exec(html)) !== null) {
-      const block = match[1];
+    const cardCount = starts.length;
+
+    for (let i = 0; i < starts.length; i += 1) {
+      const start = starts[i];
+      const end = i + 1 < starts.length ? starts[i + 1] : Math.min(html.length, start + 6000);
+      const block = html.slice(start, Math.min(end, start + 6000));
+
       const titleMatch = block.match(
         /class="[^"]*\b(?:s-item__title|s-card__title)\b[^"]*"[^>]*>([\s\S]*?)<\/(?:div|h3|span)>/i
       );
@@ -736,12 +771,13 @@
         continue;
       }
 
-      const priceMatch = block.match(
-        /class="[^"]*\b(?:s-item__price|s-card__price)\b[^"]*"[^>]*>([\s\S]*?)<\/span>/i
+      const priceMatches = Array.from(
+        block.matchAll(/class="[^"]*\b(?:s-item__price|s-card__price)\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi)
       );
-      const priceText = priceMatch
-        ? priceMatch[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-        : '';
+      const priceText = priceMatches
+        .map((pm) => pm[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+        .join(' ');
       if (!priceText || isRangePriceText(priceText)) {
         continue;
       }
@@ -762,7 +798,7 @@
       }
     }
 
-    return { blocked: false, items };
+    return { blocked: false, items, cardCount };
   }
 
   function parseEbaySoldHtml(html, marketCurrency) {

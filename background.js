@@ -1,5 +1,5 @@
 /**
- * UK FlipCalc (v2.0) - Manifest V3 Background Service Worker
+ * UK FlipCalc (v2.1) - Manifest V3 Background Service Worker
  * Handles cross-origin eBay Sold Comps fetches and live FX rate lookups with caching.
  */
 'use strict';
@@ -45,12 +45,11 @@ async function getFxRates(forceRefresh) {
     }
   }
 
-  // Primary: open.er-api.com (no API key required, supports GBP, USD, EUR, AUD, CAD, JPY, TWD)
   try {
     const resp = await fetchWithTimeout(
       'https://open.er-api.com/v6/latest/USD',
       { method: 'GET', cache: 'no-store' },
-      8000
+      7000
     );
     if (resp.ok) {
       const data = await resp.json();
@@ -75,12 +74,11 @@ async function getFxRates(forceRefresh) {
     // Try secondary provider
   }
 
-  // Secondary fallback: api.frankfurter.app
   try {
     const resp = await fetchWithTimeout(
       'https://api.frankfurter.app/latest?from=USD&to=GBP,EUR,AUD,CAD,JPY',
       { method: 'GET', cache: 'no-store' },
-      8000
+      7000
     );
     if (resp.ok) {
       const data = await resp.json();
@@ -124,7 +122,7 @@ async function fetchSoldCompsHtml(marketId, query, forceRefresh) {
   if (!forceRefresh && compsCache.has(cacheKey)) {
     const entry = compsCache.get(cacheKey);
     if (Date.now() - entry.ts < COMPS_TTL_MS) {
-      return { ok: true, html: entry.html, url, fromCache: true };
+      return { ok: true, html: entry.html, url, finalUrl: entry.finalUrl || url, fromCache: true };
     }
     compsCache.delete(cacheKey);
   }
@@ -135,32 +133,36 @@ async function fetchSoldCompsHtml(marketId, query, forceRefresh) {
       {
         method: 'GET',
         credentials: 'include',
-        cache: 'no-store',
-        headers: {
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-        }
+        cache: 'no-store'
       },
-      12000
+      7500
     );
 
+    const finalUrl = resp.url || url;
+    if (/splashui\/challenge|\/challenge\b/i.test(finalUrl)) {
+      return { ok: true, blocked: true, html: '', url, finalUrl, fromCache: false };
+    }
+
     if (!resp.ok) {
-      return { ok: false, error: `HTTP ${resp.status}`, url };
+      return { ok: false, error: `HTTP ${resp.status}`, url, finalUrl };
     }
 
     const html = await resp.text();
 
-    // Evict oldest cache entry if over limit
     if (compsCache.size >= COMPS_MAX_CACHE) {
       const oldestKey = compsCache.keys().next().value;
       compsCache.delete(oldestKey);
     }
-    compsCache.set(cacheKey, { html, ts: Date.now() });
+    compsCache.set(cacheKey, { html, finalUrl, ts: Date.now() });
 
-    return { ok: true, html, url, fromCache: false };
+    return { ok: true, html, url, finalUrl, fromCache: false };
   } catch (err) {
     return {
       ok: false,
-      error: err && err.name === 'AbortError' ? 'Request timed out' : String(err && err.message ? err.message : err),
+      error:
+        err && err.name === 'AbortError'
+          ? 'Timed out'
+          : String(err && err.message ? err.message : err),
       url
     };
   }

@@ -303,24 +303,200 @@
     return SITE === 'ebay' ? extractEbayData(fxRates) : extractVintedData();
   }
 
-  function sendRuntimeMessage(payload) {
+  const SYNCED_COMPS_STORAGE_KEY = 'uk_flipcalc_synced_comps_v1';
+
+  function sendRuntimeMessage(payload, timeoutMs) {
+    const limit = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : 9000;
     return new Promise((resolve) => {
       if (typeof chrome === 'undefined' || !chrome.runtime || typeof chrome.runtime.sendMessage !== 'function') {
         resolve({ ok: false, error: 'Extension messaging unavailable' });
         return;
       }
+      let settled = false;
+      const done = (val) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(val);
+        }
+      };
+      const timer = setTimeout(() => {
+        done({ ok: false, error: 'Timed out' });
+      }, limit);
+
       try {
         chrome.runtime.sendMessage(payload, (response) => {
           if (chrome.runtime.lastError) {
-            resolve({ ok: false, error: chrome.runtime.lastError.message || 'Runtime error' });
+            done({ ok: false, error: chrome.runtime.lastError.message || 'Runtime error' });
             return;
           }
-          resolve(response || { ok: false, error: 'No response' });
+          done(response || { ok: false, error: 'No response' });
         });
       } catch (err) {
-        resolve({ ok: false, error: String(err) });
+        done({ ok: false, error: String(err) });
       }
     });
+  }
+
+  async function fetchSoldHtmlDirectOrBg(market, query, forceRefresh) {
+    const sameOrigin = window.location.hostname.toLowerCase() === market.domain.toLowerCase();
+    if (sameOrigin) {
+      const params = new URLSearchParams({
+        _nkw: query,
+        LH_Sold: '1',
+        LH_Complete: '1',
+        _sop: '13',
+        _ipg: '60'
+      });
+      const url = `/sch/i.html?${params.toString()}`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 7000);
+      try {
+        const resp = await fetch(url, {
+          method: 'GET',
+          credentials: 'same-origin',
+          cache: forceRefresh ? 'no-store' : 'default',
+          signal: controller.signal
+        });
+        clearTimeout(timer);
+        if (/splashui\/challenge|\/challenge\b/i.test(resp.url || '')) {
+          return { ok: true, blocked: true, html: '' };
+        }
+        if (resp.ok) {
+          const html = await resp.text();
+          return { ok: true, html, via: 'same-origin' };
+        }
+      } catch (_) {
+        clearTimeout(timer);
+        // Fall through to background service worker
+      }
+    }
+
+    return sendRuntimeMessage(
+      {
+        type: 'FETCH_SOLD_COMPS',
+        marketId: market.id,
+        query,
+        forceRefresh: Boolean(forceRefresh)
+      },
+      9000
+    );
+  }
+
+  function normalizeQueryKey(q) {
+    return String(q || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function saveSyncedComps(marketId, query, items) {
+    if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+      return;
+    }
+    const payload = {
+      marketId,
+      query: normalizeQueryKey(query),
+      items: items.slice(0, 40),
+      updatedAt: Date.now()
+    };
+    chrome.storage.local.set({ [SYNCED_COMPS_STORAGE_KEY]: payload }).catch(() => {});
+  }
+
+  function readSyncedComps() {
+    return new Promise((resolve) => {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+        resolve(null);
+        return;
+      }
+      chrome.storage.local.get(SYNCED_COMPS_STORAGE_KEY, (data) => {
+        if (chrome.runtime && chrome.runtime.lastError) {
+          resolve(null);
+          return;
+        }
+        resolve((data && data[SYNCED_COMPS_STORAGE_KEY]) || null);
+      });
+    });
+  }
+
+  function queriesMatch(syncedQuery, primaryQuery, broaderQuery) {
+    const s = normalizeQueryKey(syncedQuery);
+    if (!s) {
+      return false;
+    }
+    const p = normalizeQueryKey(primaryQuery);
+    const b = normalizeQueryKey(broaderQuery);
+    return s === p || s === b || (b && s.startsWith(b)) || (p && p.startsWith(s));
+  }
+
+  /**
+   * On eBay Sold & Completed search pages (/sch/* with LH_Sold=1), read live rendered sold
+   * prices from the page DOM, display a compact summary pill, and sync back to item tabs.
+   */
+  function initSoldSearchSyncWidget() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('LH_Sold') !== '1') {
+      return;
+    }
+    const query = (params.get('_nkw') || '').trim();
+    if (!query) {
+      return;
+    }
+
+    const host = document.createElement('div');
+    host.id = HOST_ID;
+    const shadow = host.attachShadow({ mode: 'open' });
+    const style = document.createElement('style');
+    style.textContent = `
+      :host { all: initial; position: fixed; right: 18px; bottom: 18px; z-index: 2147483647;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif; }
+      .fc-sync-pill { display: inline-flex; align-items: center; gap: 8px; padding: 9px 14px;
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #f8fafc;
+        border: 1px solid rgba(56, 189, 248, 0.45); border-radius: 999px; font-size: 12px;
+        font-weight: 600; box-shadow: 0 12px 28px rgba(2, 6, 23, 0.55); }
+      .fc-sync-logo { width: 20px; height: 20px; border-radius: 5px; background: #10b981;
+        color: #052e16; font-weight: 800; display: inline-flex; align-items: center;
+        justify-content: center; font-size: 12px; }
+      .fc-sync-med { color: #4ade80; font-weight: 800; }
+      .fc-sync-sub { color: #94a3b8; font-size: 11px; }
+    `;
+    shadow.appendChild(style);
+    const pill = document.createElement('div');
+    pill.className = 'fc-sync-pill';
+    pill.innerHTML = `<span class="fc-sync-logo">${core.getCurrencySymbol(SITE_INFO.currency)}</span><span>FlipCalc reading sold comps...</span>`;
+    shadow.appendChild(pill);
+    (document.body || document.documentElement).appendChild(host);
+
+    const runParse = () => {
+      const parsed = core.parseEbaySoldDocument(document, SITE_INFO.currency);
+      if (parsed.blocked || parsed.items.length === 0) {
+        return false;
+      }
+      saveSyncedComps(SITE_INFO.marketId, query, parsed.items);
+      const summary = core.analyzeSoldComps(parsed.items, {
+        targetCurrency: SITE_INFO.currency,
+        marketCurrency: SITE_INFO.currency,
+        fxRates: core.FALLBACK_FX_RATES
+      });
+      const med = core.formatMoney(summary.median, SITE_INFO.currency);
+      const low = core.formatMoney(summary.p25, SITE_INFO.currency);
+      const high = core.formatMoney(summary.p75, SITE_INFO.currency);
+      pill.innerHTML = `
+        <span class="fc-sync-logo">${core.getCurrencySymbol(SITE_INFO.currency)}</span>
+        <span>${summary.count} sold</span>
+        <span class="fc-sync-med">Med ${med}</span>
+        <span class="fc-sync-sub">(${low}–${high}) • Synced ✓</span>
+      `;
+      return true;
+    };
+
+    if (!runParse()) {
+      setTimeout(() => {
+        if (!runParse()) {
+          pill.innerHTML = `<span class="fc-sync-logo">${core.getCurrencySymbol(SITE_INFO.currency)}</span><span class="fc-sync-sub">FlipCalc: no sold prices detected on this page</span>`;
+        }
+      }, 1200);
+    }
   }
 
   function createWidget() {
@@ -717,11 +893,16 @@
     function applySummaryToUi(summary, allowAutoFill) {
       lastCompsSummary = summary;
       const market = getSelectedMarket();
+      els.resaleInput.placeholder = 'Enter price';
+      els.compsRefreshBtn.classList.remove('fc-spinning');
 
       if (!summary || summary.count === 0) {
         els.tierGrid.classList.add('fc-hidden');
         els.compsCount.textContent = '0 sold';
         els.compsCount.dataset.confidence = 'none';
+        if (!els.resaleInput.value) {
+          els.resaleHint.textContent = 'Manual';
+        }
         updateFxNote();
         recalculate();
         return;
@@ -760,6 +941,9 @@
       els.compsCount.textContent = 'Checking...';
       els.compsCount.dataset.confidence = 'none';
       els.compsRefreshBtn.classList.add('fc-spinning');
+      if (!els.resaleInput.value) {
+        els.resaleInput.placeholder = 'Checking...';
+      }
     }
 
     function setCompsMessageState(badgeText, message) {
@@ -770,9 +954,42 @@
       els.compsCount.dataset.confidence = 'none';
       els.tierGrid.classList.add('fc-hidden');
       els.compsRefreshBtn.classList.remove('fc-spinning');
+      els.resaleInput.placeholder = 'Enter price';
+      if (!els.resaleInput.value) {
+        els.resaleHint.textContent = 'Manual';
+      }
       lastCompsSummary = null;
       updateFxNote();
       recalculate();
+    }
+
+    function applySyncedIfMatching(synced, forceFill) {
+      if (!synced || !Array.isArray(synced.items) || synced.items.length === 0) {
+        return false;
+      }
+      if (Date.now() - (synced.updatedAt || 0) > 15 * 60 * 1000) {
+        return false;
+      }
+      const market = getSelectedMarket();
+      if (synced.marketId !== market.id) {
+        return false;
+      }
+      const title = els.titleInput.value.trim();
+      const primaryQuery = core.cleanTitleForSearch(title, 8);
+      const broaderQuery = core.cleanTitleForSearch(title, 4);
+      if (!queriesMatch(synced.query, primaryQuery, broaderQuery)) {
+        return false;
+      }
+
+      rawCompsItems = synced.items;
+      lastQueriedKey = `${market.id}::${primaryQuery.toLowerCase()}`;
+      const summary = core.analyzeSoldComps(synced.items, {
+        targetCurrency: workingCurrency,
+        marketCurrency: market.currency,
+        fxRates
+      });
+      applySummaryToUi(summary, forceFill || !dirty.resalePrice);
+      return true;
     }
 
     async function fetchAndAnalyzeComps(options) {
@@ -798,51 +1015,60 @@
         return;
       }
 
+      // Use recently synced comps from an opened Sold Comps tab if available
+      if (!opts.forceRefresh) {
+        const synced = await readSyncedComps();
+        if (applySyncedIfMatching(synced, Boolean(opts.forceAutoFill))) {
+          return;
+        }
+      }
+
       const seq = ++compsRequestSeq;
       lastQueriedKey = requestKey;
       setCompsLoadingState(`Checking ${market.name} sold prices...`);
 
-      const resp = await sendRuntimeMessage({
-        type: 'FETCH_SOLD_COMPS',
-        marketId: market.id,
-        query: primaryQuery,
-        forceRefresh: Boolean(opts.forceRefresh)
-      });
+      const resp = await fetchSoldHtmlDirectOrBg(market, primaryQuery, Boolean(opts.forceRefresh));
 
       if (seq !== compsRequestSeq) {
         return;
       }
 
+      if (resp && resp.blocked) {
+        setCompsMessageState('Verify', 'Click button below to view & auto-sync prices');
+        return;
+      }
+
       if (!resp || !resp.ok || !resp.html) {
-        setCompsMessageState('Manual', 'Auto-check unavailable — click button below');
+        const errHint = resp && resp.error ? ` (${resp.error})` : '';
+        setCompsMessageState('Manual', `Auto-check failed${errHint} — click below to sync`);
         return;
       }
 
       let parsed = core.parseEbaySoldHtml(resp.html, market.currency);
 
       if (parsed.blocked) {
-        setCompsMessageState('Verify', 'eBay check needed — click button below to view');
+        setCompsMessageState('Verify', 'Click button below to view & auto-sync prices');
         return;
       }
 
       // If strict 8-word title had < 2 sold matches, retry once with broader 4-word core query
       if (parsed.items.length < 2 && broaderQuery && broaderQuery.toLowerCase() !== primaryQuery.toLowerCase()) {
         setCompsLoadingState(`Broadening search on ${market.name}...`);
-        const retryResp = await sendRuntimeMessage({
-          type: 'FETCH_SOLD_COMPS',
-          marketId: market.id,
-          query: broaderQuery,
-          forceRefresh: Boolean(opts.forceRefresh)
-        });
+        const retryResp = await fetchSoldHtmlDirectOrBg(market, broaderQuery, Boolean(opts.forceRefresh));
 
         if (seq !== compsRequestSeq) {
+          return;
+        }
+
+        if (retryResp && retryResp.blocked) {
+          setCompsMessageState('Verify', 'Click button below to view & auto-sync prices');
           return;
         }
 
         if (retryResp && retryResp.ok && retryResp.html) {
           const retryParsed = core.parseEbaySoldHtml(retryResp.html, market.currency);
           if (retryParsed.blocked) {
-            setCompsMessageState('Verify', 'eBay check needed — click button below to view');
+            setCompsMessageState('Verify', 'Click button below to view & auto-sync prices');
             return;
           }
           if (retryParsed.items.length > parsed.items.length) {
@@ -855,7 +1081,7 @@
       rawCompsItems = parsed.items;
 
       if (parsed.items.length === 0) {
-        setCompsMessageState('0 sold', `No recent sold comps on ${market.name} — try shortening title`);
+        setCompsMessageState('0 sold', `No sold comps matched — click below to check & sync`);
         return;
       }
 
@@ -1176,13 +1402,32 @@
       }
     };
 
+    // Live-sync sold comps whenever user opens a Sold Comps tab
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+      chrome.storage.onChanged.addListener((changes, areaName) => {
+        if (areaName !== 'local' || !changes[SYNCED_COMPS_STORAGE_KEY]) {
+          return;
+        }
+        const nextVal = changes[SYNCED_COMPS_STORAGE_KEY].newValue;
+        applySyncedIfMatching(nextVal, true);
+      });
+    }
+
     window.addEventListener('popstate', onUrlChange);
     setInterval(onUrlChange, 1000);
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', createWidget, { once: true });
-  } else {
+  function bootstrap() {
+    if (SITE === 'ebay' && window.location.pathname.startsWith('/sch/')) {
+      initSoldSearchSyncWidget();
+      return;
+    }
     createWidget();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootstrap, { once: true });
+  } else {
+    bootstrap();
   }
 })();

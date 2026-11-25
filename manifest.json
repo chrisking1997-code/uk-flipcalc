@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "UK FlipCalc — Global eBay & Vinted",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Floating profit, ROI & break-even arbitrage calculator with automatic multi-country eBay Sold Comps valuation, live FX conversion, and instant buy/skip verdicts.",
   "icons": {
     "16": "icons/icon16.png",
@@ -35,6 +35,13 @@
         "https://www.ebay.fr/itm/*",
         "https://www.ebay.ca/itm/*",
         "https://www.ebay.it/itm/*",
+        "https://www.ebay.co.uk/sch/*",
+        "https://www.ebay.com/sch/*",
+        "https://www.ebay.de/sch/*",
+        "https://www.ebay.com.au/sch/*",
+        "https://www.ebay.fr/sch/*",
+        "https://www.ebay.ca/sch/*",
+        "https://www.ebay.it/sch/*",
         "https://www.vinted.co.uk/items/*"
       ],
       "js": [
