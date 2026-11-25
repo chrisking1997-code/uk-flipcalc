@@ -1,67 +1,58 @@
-# UK FlipCalc — Chrome Extension (Manifest V3)
+# UK FlipCalc (v2.0 Global) — Chrome Extension (Manifest V3)
 
-A clean, lightweight Chrome Extension that injects a sleek dark-mode floating **profit, ROI, and break-even calculator** onto product pages on **eBay UK** (`ebay.co.uk/itm/*`) and **Vinted UK** (`vinted.co.uk/items/*`).
+A lightweight Chrome Extension that injects a sleek dark-mode floating **profit, ROI, break-even & automatic Sold Comps valuation widget** onto product pages across **global eBay sites** (UK, US, DE, AU, FR, CA, IT) and **Vinted UK**.
 
-## Features
+## What's New in v2.0
 
-- **Automatic Page Activation**: Runs automatically on `https://www.ebay.co.uk/itm/*` and `https://www.vinted.co.uk/items/*` with zero extra browser permissions.
-- **Smart Auto-Extraction + Manual Override**:
-  - **eBay UK**: Parses Item Title (`h1.x-item-title__mainTitle`), Item Price (`.x-price-primary` + JSON-LD/meta fallbacks), and Postage (`.ux-labels-values--shipping` / free postage detection).
-  - **Vinted UK**: Parses Item Title (`[data-testid="item-page-summary-plugin"] h1`), Item Price (`[data-testid="item-price"]`), Buyer Protection fee (`[data-testid="total-combined-price"] - item-price`), and Shipping (`[data-testid="item-shipping-banner-price"]`).
-  - Every extracted field can be edited manually at any time, and a **Re-sync (↻)** button re-reads the page DOM on demand.
-- **Shadow DOM Floating Widget**:
-  - Fixed in the bottom-right corner inside an isolated Shadow DOM (`:host { all: initial }`) so its styles never clash with eBay or Vinted CSS.
-  - Minimises to a compact pill (with live profit badge) and remembers your collapsed/expanded state.
-- **Live Profit, ROI & Break-Even Calculations** (updates on every keystroke):
-  - **Resale Platforms**:
-    - `eBay UK Private (0% fee)`
-    - `eBay UK Business (12.8% + £0.30)`
-    - `Vinted UK (0% seller fee)`
-    - `Custom %` (reveals an editable percentage fee input)
-  - **Outputs**: Total Cost (£), Estimated Net Profit (£ — green when profitable, red when negative), ROI (%), and Break-Even Resale Price (£).
-- **1-Click "Check eBay Sold Comps"**:
-  - Strips common UK listing filler words (`BNWT`, `RARE`, `FREE POST`, `UK SELLER`, `VGC`, etc.) and opens a new tab to eBay UK **Sold & Completed** listings (`LH_Sold=1&LH_Complete=1&_sop=13`).
+- **Automatic eBay Sold Comps Valuation**:
+  - Automatically fetches recent **Sold & Completed** listings in the background via `background.js` (with 20-minute caching and smart broader-query fallback if exact title matches < 2 items).
+  - Filters extreme outliers using IQR trimming and displays clickable **Low (P25)**, **Median (P50)**, and **High (P75)** market prices.
+  - Auto-fills **Target Resale** with the market median so you get an instant valuation without typing manually.
+- **Instant Buy / Skip Verdict**:
+  - **`✓ GOOD FLIP`** (green): strong profit and ≥ 20% ROI
+  - **`⚠ THIN MARGIN`** (amber): profitable, but low margin or ROI
+  - **`✕ LOSS — SKIP`** (red): market value is below break-even (shows exact shortfall)
+- **Multi-Country eBay Support + Live FX Conversion**:
+  - Activates automatically on **eBay UK** (`ebay.co.uk`), **eBay US** (`ebay.com`), **eBay DE** (`ebay.de`), **eBay AU** (`ebay.com.au`), **eBay FR** (`ebay.fr`), **eBay CA** (`ebay.ca`), **eBay IT** (`ebay.it`), and **Vinted UK** (`vinted.co.uk`).
+  - Switch the **Comps Market** dropdown to compare resale prices across any supported country — live exchange rates (cached for 6 hours with offline fallbacks) automatically convert cross-border comps into the listing's currency.
+  - Parses localized prices and free shipping across GBP (`£`), USD (`$`), EUR (`€` with comma decimals like `29,99 €`), AUD (`A$`), and CAD (`C$`).
 
 ## Project Structure
 
 ```text
 uk-flipcalc/
-├── manifest.json       # Chrome Extension Manifest V3 configuration
-├── calculator.js       # Pure calculation, GBP parsing, and title-cleaning logic
-├── content.js          # eBay UK / Vinted UK DOM extractors & Shadow DOM widget
-├── styles.css          # Dark-mode styles injected exclusively into Shadow DOM
+├── manifest.json           # Chrome Extension Manifest V3 configuration
+├── background.js           # Service worker for Sold Comps & live FX fetches (with caching)
+├── calculator.js           # Pure math, multi-currency parsing, FX, comps stats & verdict engine
+├── content.js              # Global eBay & Vinted extractors + Shadow DOM widget
+├── styles.css              # Dark-mode styles injected exclusively into Shadow DOM
 ├── icons/
-│   ├── icon.svg        # Vector source icon
-│   ├── icon16.png      # Manifest V3 toolbar/extension icon (16×16)
-│   ├── icon48.png      # Extensions page icon (48×48)
-│   └── icon128.png     # Store/details icon (128×128)
+│   ├── icon.svg
+│   ├── icon16.png
+│   ├── icon48.png
+│   └── icon128.png
 └── tests/
-    ├── calculator.test.js  # Node unit tests for formulas, parsing & title cleanup
-    └── ui.test.py          # Playwright E2E tests (Shadow DOM isolation & live UI)
+    └── calculator.test.js  # Node unit tests for v2.0 logic
 ```
 
-## How to Install in Chrome (Load Unpacked)
+## How to Install / Update in Chrome or Edge (Load Unpacked)
 
-1. Open Google Chrome and navigate to `chrome://extensions`.
-2. Toggle **Developer mode** ON in the top-right corner.
-3. Click **Load unpacked** in the top-left corner.
-4. Select the `uk-flipcalc` folder (the directory containing `manifest.json`).
-5. Visit any product listing on `https://www.ebay.co.uk/itm/...` or `https://www.vinted.co.uk/items/...` — the **UK FlipCalc** widget will appear automatically in the bottom-right corner.
+1. Pull the latest code (`git pull`) or download the ZIP from GitHub and extract it.
+2. Open Chrome and navigate to `chrome://extensions` (or `edge://extensions` in Edge).
+3. Enable **Developer mode** in the top-right corner.
+4. Click **Load unpacked** and select the `uk-flipcalc` folder (containing `manifest.json`), or click the **Reload (↻)** icon on the existing UK FlipCalc card if already installed.
+5. Visit any product listing on `ebay.co.uk/itm/...`, `ebay.com/itm/...`, `ebay.de/itm/...`, `ebay.com.au/itm/...`, `ebay.fr/itm/...`, `ebay.ca/itm/...`, `ebay.it/itm/...`, or `vinted.co.uk/items/...`.
 
 ## Running Local Tests
 
 ```bash
-# 1. Unit tests for calculations, currency parsing, and title cleaning
 node --test tests/calculator.test.js
-
-# 2. Playwright browser tests (Shadow DOM CSS isolation, eBay & Vinted extraction, live UI, zero console errors)
-python3 tests/ui.test.py
 ```
 
 ## Calculation Formulas
 
 - **Base Cost**: `Buy Price + Inbound Post/Fee + Outbound Postage`
-- **Platform Fee**: `Target Resale × (Fee % / 100) + Fixed Fee`
+- **Platform Fee**: `Target Resale × (Fee % / 100) + Fixed Fee` (auto-converted if fee currency differs)
 - **Total Cost**: `Base Cost + Platform Fee`
 - **Estimated Net Profit**: `Target Resale − Total Cost`
 - **ROI (%)**: `(Estimated Net Profit / Total Cost) × 100`

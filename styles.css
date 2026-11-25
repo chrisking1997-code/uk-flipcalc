@@ -19,12 +19,15 @@
 
 /* Main Floating Card */
 .fc-card {
-  width: 324px;
+  width: 344px;
   max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 28px);
+  display: flex;
+  flex-direction: column;
   background: linear-gradient(180deg, #0f172a 0%, #0b1220 100%);
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 14px;
-  box-shadow: 0 20px 48px rgba(2, 6, 23, 0.65), 0 0 0 1px rgba(15, 23, 42, 0.8);
+  box-shadow: 0 20px 48px rgba(2, 6, 23, 0.68), 0 0 0 1px rgba(15, 23, 42, 0.85);
   overflow: hidden;
   transition: transform 0.18s ease, opacity 0.18s ease, box-shadow 0.18s ease;
 }
@@ -39,9 +42,10 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 11px 12px 10px 14px;
-  background: rgba(30, 41, 59, 0.65);
+  padding: 10px 12px 10px 14px;
+  background: rgba(30, 41, 59, 0.7);
   border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  flex-shrink: 0;
 }
 
 .fc-brand {
@@ -58,7 +62,7 @@
   background: linear-gradient(135deg, #10b981, #059669);
   color: #052e16;
   font-weight: 800;
-  font-size: 13px;
+  font-size: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -125,6 +129,12 @@
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
+.fc-icon-btn.fc-icon-btn-sm {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}
+
 .fc-icon-btn:hover {
   background: #334155;
   color: #f8fafc;
@@ -137,23 +147,36 @@
 }
 
 .fc-icon-btn svg {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   display: block;
+}
+
+.fc-icon-btn.fc-spinning svg {
+  animation: fc-spin 0.85s linear infinite;
+}
+
+@keyframes fc-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Body */
 .fc-body {
-  padding: 12px 14px 14px;
+  padding: 11px 13px 13px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 9px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #334155 transparent;
 }
 
 .fc-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   min-width: 0;
 }
 
@@ -182,7 +205,7 @@
 .fc-grid-2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 9px;
+  gap: 8px;
 }
 
 .fc-input-wrap {
@@ -195,18 +218,18 @@
 .fc-suffix {
   position: absolute;
   color: #64748b;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
   pointer-events: none;
   user-select: none;
 }
 
 .fc-prefix {
-  left: 9px;
+  left: 8px;
 }
 
 .fc-suffix {
-  right: 9px;
+  right: 8px;
 }
 
 .fc-input,
@@ -217,9 +240,9 @@
   border-radius: 8px;
   color: #f8fafc;
   font-family: inherit;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
-  padding: 7px 9px;
+  padding: 6.5px 9px;
   outline: none;
   transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
 }
@@ -227,6 +250,10 @@
 .fc-input.fc-has-prefix {
   padding-left: 22px;
   font-variant-numeric: tabular-nums;
+}
+
+.fc-input.fc-has-prefix-wide {
+  padding-left: 29px;
 }
 
 .fc-input.fc-has-suffix {
@@ -249,7 +276,6 @@
   box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.22);
 }
 
-/* Remove number spinners for cleaner precision inputs */
 .fc-input[type="number"]::-webkit-outer-spin-button,
 .fc-input[type="number"]::-webkit-inner-spin-button {
   -webkit-appearance: none;
@@ -263,10 +289,11 @@
 .fc-select {
   cursor: pointer;
   appearance: none;
-  padding-right: 28px;
+  padding-right: 24px;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 9px center;
+  background-position: right 8px center;
+  text-overflow: ellipsis;
 }
 
 .fc-select option {
@@ -282,15 +309,232 @@
   display: flex;
 }
 
-/* Results Panel */
+/* Auto Market Valuation / Sold Comps Panel */
+.fc-market-box {
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.fc-market-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.fc-market-title-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fc-market-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #cbd5e1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.fc-count-pill {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.16);
+  color: #7dd3fc;
+  white-space: nowrap;
+}
+
+.fc-count-pill[data-confidence="high"] {
+  background: rgba(34, 197, 94, 0.16);
+  color: #86efac;
+}
+
+.fc-count-pill[data-confidence="low"] {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fcd34d;
+}
+
+.fc-count-pill[data-confidence="none"] {
+  background: rgba(148, 163, 184, 0.16);
+  color: #94a3b8;
+}
+
+.fc-comps-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: #94a3b8;
+  min-height: 20px;
+}
+
+.fc-comps-status-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fc-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(56, 189, 248, 0.25);
+  border-top-color: #38bdf8;
+  animation: fc-spin 0.75s linear infinite;
+  flex-shrink: 0;
+  display: none;
+}
+
+.fc-spinner.fc-visible {
+  display: inline-block;
+}
+
+.fc-tier-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.fc-tier-grid.fc-hidden {
+  display: none;
+}
+
+.fc-tier-btn {
+  appearance: none;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(30, 41, 59, 0.65);
+  border-radius: 8px;
+  padding: 5px 4px;
+  color: #e2e8f0;
+  font-family: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  transition: background 0.14s ease, border-color 0.14s ease, transform 0.1s ease;
+}
+
+.fc-tier-btn:hover {
+  background: rgba(51, 65, 85, 0.85);
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+.fc-tier-btn.fc-active {
+  background: rgba(14, 165, 233, 0.18);
+  border-color: #38bdf8;
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.25);
+}
+
+.fc-tier-label {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.fc-tier-btn.fc-active .fc-tier-label {
+  color: #7dd3fc;
+}
+
+.fc-tier-price {
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #f8fafc;
+}
+
+.fc-fx-note {
+  font-size: 10px;
+  color: #7dd3fc;
+  background: rgba(14, 165, 233, 0.1);
+  border: 1px solid rgba(14, 165, 233, 0.22);
+  border-radius: 6px;
+  padding: 3px 7px;
+  text-align: center;
+  display: none;
+}
+
+.fc-fx-note.fc-visible {
+  display: block;
+}
+
+/* Results & Verdict Panel */
 .fc-results {
   background: rgba(15, 23, 42, 0.9);
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 10px;
-  padding: 10px 12px;
+  padding: 9px 10px;
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 8px;
+}
+
+.fc-verdict {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: rgba(30, 41, 59, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.fc-verdict[data-tone="positive"] {
+  background: rgba(16, 185, 129, 0.16);
+  border-color: rgba(16, 185, 129, 0.42);
+}
+
+.fc-verdict[data-tone="warning"] {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.fc-verdict[data-tone="negative"] {
+  background: rgba(244, 63, 94, 0.16);
+  border-color: rgba(244, 63, 94, 0.42);
+}
+
+.fc-verdict-badge {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  color: #cbd5e1;
+}
+
+.fc-verdict[data-tone="positive"] .fc-verdict-badge {
+  color: #4ade80;
+}
+
+.fc-verdict[data-tone="warning"] .fc-verdict-badge {
+  color: #fbbf24;
+}
+
+.fc-verdict[data-tone="negative"] .fc-verdict-badge {
+  color: #fb7185;
+}
+
+.fc-verdict-reason {
+  font-size: 10.5px;
+  color: #cbd5e1;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .fc-profit-hero {
@@ -298,7 +542,7 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  padding: 7px 10px;
+  padding: 6px 10px;
   border-radius: 8px;
   background: rgba(30, 41, 59, 0.65);
   border: 1px solid rgba(148, 163, 184, 0.12);
@@ -324,7 +568,7 @@
 }
 
 .fc-profit-value {
-  font-size: 20px;
+  font-size: 19px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
@@ -348,21 +592,21 @@
 .fc-metric {
   background: rgba(30, 41, 59, 0.5);
   border-radius: 7px;
-  padding: 6px 7px;
+  padding: 5px 6px;
   text-align: center;
 }
 
 .fc-metric-label {
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 600;
   color: #64748b;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  margin-bottom: 2px;
+  margin-bottom: 1px;
 }
 
 .fc-metric-value {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: #e2e8f0;
@@ -377,10 +621,10 @@
 }
 
 .fc-fee-note {
-  font-size: 10.5px;
+  font-size: 10px;
   color: #64748b;
   text-align: center;
-  min-height: 14px;
+  min-height: 13px;
 }
 
 /* Sold Comps Button */
@@ -389,11 +633,11 @@
   width: 100%;
   border: none;
   border-radius: 9px;
-  padding: 9px 12px;
+  padding: 8.5px 12px;
   background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
   color: #ffffff;
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.01em;
   display: inline-flex;
@@ -426,7 +670,7 @@
 }
 
 .fc-query-preview {
-  font-size: 10.5px;
+  font-size: 10px;
   color: #64748b;
   text-align: center;
   white-space: nowrap;
