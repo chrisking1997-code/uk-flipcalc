@@ -264,3 +264,78 @@ test('buildEbaySoldCompsUrl includes LH_ItemCondition for used and new condition
   assert.doesNotMatch(anyUrl, /LH_ItemCondition=/);
 });
 
+test('calculateFlip computes exact Max Buy Price (offer target) for target ROI', () => {
+  // Resale £40, inbound £2, outbound £3.50, 0% fee, target 25% ROI -> max total cost £32 -> max buy £26.50
+  const zeroFee = core.calculateFlip({
+    buyPrice: 30,
+    inboundShipping: 2,
+    outboundShipping: 3.5,
+    resalePrice: 40,
+    platform: 'ebay_private',
+    currency: 'GBP',
+    targetRoiPct: 25
+  });
+  assert.equal(zeroFee.maxBuyPrice, 26.5);
+
+  // Verify plugging maxBuyPrice back in achieves exactly 25.0% ROI
+  const verify = core.calculateFlip({
+    buyPrice: zeroFee.maxBuyPrice,
+    inboundShipping: 2,
+    outboundShipping: 3.5,
+    resalePrice: 40,
+    platform: 'ebay_private',
+    currency: 'GBP',
+    targetRoiPct: 25
+  });
+  assert.equal(verify.roiPct, 25);
+
+  // Business fee (12.8% + £0.30) on £50 resale = £6.70 fee; maxTotalCost @ 25% = £40; minus £3.50 out & £6.70 fee = £29.80
+  const biz = core.calculateFlip({
+    buyPrice: 35,
+    inboundShipping: 0,
+    outboundShipping: 3.5,
+    resalePrice: 50,
+    platform: 'ebay_business',
+    currency: 'GBP',
+    targetRoiPct: 25
+  });
+  assert.equal(biz.maxBuyPrice, 29.8);
+
+  // Unprofitable floor returns 0
+  const impossible = core.calculateFlip({
+    buyPrice: 10,
+    inboundShipping: 20,
+    outboundShipping: 5,
+    resalePrice: 20,
+    platform: 'ebay_private',
+    currency: 'GBP',
+    targetRoiPct: 25
+  });
+  assert.equal(impossible.maxBuyPrice, 0);
+});
+
+test('buildVintedCompsUrl and buildMarketCompsUrl build Vinted UK catalog URLs with condition & sync flag', () => {
+  assert.equal(core.COMPS_MARKETS.vinted_uk.priceType, 'active');
+
+  const url = core.buildMarketCompsUrl('Callaway Golf balls', 'vinted_uk', 8, 'used');
+  assert.match(url, /^https:\/\/www\.vinted\.co\.uk\/catalog\?/);
+  assert.match(url, /search_text=Callaway\+Golf\+balls/);
+  assert.match(url, /flipcalc_sync=1/);
+  assert.match(url, /status_ids%5B%5D=2/);
+});
+
+test('parseVintedApiItems parses Vinted JSON items, prepends missing brand, and excludes current item ID', () => {
+  const mockJson = {
+    items: [
+      { id: 1001, title: '24 Golf Balls', brand_title: 'Callaway', price: { amount: '15.00', currency_code: 'GBP' } },
+      { id: 1002, title: 'Callaway Supersoft Golf Balls x20', brand_title: 'Callaway', price: { amount: '16.50', currency_code: 'GBP' } },
+      { id: 1003, title: 'Golf Balls Bundle', brand_title: 'Callaway', price: '18.00', currency: 'GBP' }
+    ]
+  };
+  const parsed = core.parseVintedApiItems(mockJson, 'GBP', '1001');
+  assert.equal(parsed.items.length, 2);
+  assert.deepEqual(parsed.items[0], { title: 'Callaway Supersoft Golf Balls x20', price: 16.5, currency: 'GBP' });
+  assert.deepEqual(parsed.items[1], { title: 'Callaway Golf Balls Bundle', price: 18, currency: 'GBP' });
+});
+
+

@@ -30,6 +30,8 @@
   const EBAY_MARKETS = {
     ebay_uk: {
       id: 'ebay_uk',
+      type: 'ebay',
+      priceType: 'sold',
       name: 'eBay UK',
       shortName: 'UK',
       flag: '🇬🇧',
@@ -40,6 +42,8 @@
     },
     ebay_us: {
       id: 'ebay_us',
+      type: 'ebay',
+      priceType: 'sold',
       name: 'eBay US',
       shortName: 'US',
       flag: '🇺🇸',
@@ -50,6 +54,8 @@
     },
     ebay_de: {
       id: 'ebay_de',
+      type: 'ebay',
+      priceType: 'sold',
       name: 'eBay DE',
       shortName: 'DE',
       flag: '🇩🇪',
@@ -60,6 +66,8 @@
     },
     ebay_au: {
       id: 'ebay_au',
+      type: 'ebay',
+      priceType: 'sold',
       name: 'eBay AU',
       shortName: 'AU',
       flag: '🇦🇺',
@@ -70,6 +78,8 @@
     },
     ebay_fr: {
       id: 'ebay_fr',
+      type: 'ebay',
+      priceType: 'sold',
       name: 'eBay FR',
       shortName: 'FR',
       flag: '🇫🇷',
@@ -80,6 +90,8 @@
     },
     ebay_ca: {
       id: 'ebay_ca',
+      type: 'ebay',
+      priceType: 'sold',
       name: 'eBay CA',
       shortName: 'CA',
       flag: '🇨🇦',
@@ -90,6 +102,8 @@
     },
     ebay_it: {
       id: 'ebay_it',
+      type: 'ebay',
+      priceType: 'sold',
       name: 'eBay IT',
       shortName: 'IT',
       flag: '🇮🇹',
@@ -99,6 +113,24 @@
       defaultPlatform: 'ebay_it_private'
     }
   };
+
+  const COMPS_MARKETS = Object.assign(
+    {
+      vinted_uk: {
+        id: 'vinted_uk',
+        type: 'vinted',
+        priceType: 'active',
+        name: 'Vinted UK',
+        shortName: 'Vinted',
+        flag: '🇬🇧',
+        domain: 'www.vinted.co.uk',
+        currency: 'GBP',
+        defaultOutbound: 0.0,
+        defaultPlatform: 'vinted_uk'
+      }
+    },
+    EBAY_MARKETS
+  );
 
   const PLATFORMS = {
     ebay_private: {
@@ -502,6 +534,24 @@
       breakEvenPrice = (baseCost + fixedFee) / (1 - feeRate);
     }
 
+    // Max Buy Price B_max to hit target ROI r:
+    // (R - C) / C >= r  =>  C <= R / (1 + r)
+    // B_max = R / (1 + r) - inboundShipping - outboundShipping - platformFee
+    const targetRoiPct =
+      params.targetRoiPct !== undefined &&
+      params.targetRoiPct !== null &&
+      Number.isFinite(parseFloat(params.targetRoiPct)) &&
+      parseFloat(params.targetRoiPct) >= 0
+        ? parseFloat(params.targetRoiPct)
+        : 25;
+    let maxBuyPrice = null;
+    if (hasResaleInput) {
+      const targetRate = targetRoiPct / 100;
+      const maxTotalCost = resalePrice / (1 + targetRate);
+      const rawMaxBuy = maxTotalCost - inboundShipping - outboundShipping - platformFee;
+      maxBuyPrice = rawMaxBuy > 0 ? round2(rawMaxBuy) : 0;
+    }
+
     return {
       currency: workingCurrency,
       buyPrice: round2(buyPrice),
@@ -514,6 +564,8 @@
       netProfit: netProfit !== null ? round2(netProfit) : null,
       roiPct: roiPct !== null ? Math.round(roiPct * 10) / 10 : null,
       breakEvenPrice: breakEvenPrice !== null ? round2(breakEvenPrice) : null,
+      targetRoiPct,
+      maxBuyPrice,
       hasResaleInput
     };
   }
@@ -697,6 +749,194 @@
       params.set('LH_ItemCondition', '1000');
     }
     return `https://${market.domain}/sch/i.html?${params.toString()}`;
+  }
+
+  /**
+   * Build the Vinted UK catalog search URL (with optional flipcalc_sync=1 flag for tab sync).
+   */
+  function buildVintedCompsUrl(rawTitle, maxWords, condition, withSyncFlag) {
+    const query = cleanTitleForSearch(rawTitle, maxWords);
+    const params = new URLSearchParams({
+      search_text: query,
+      order: 'relevance'
+    });
+    if (condition === 'new') {
+      params.append('status_ids[]', '6');
+      params.append('status_ids[]', '1');
+    } else if (condition === 'used') {
+      params.append('status_ids[]', '2');
+      params.append('status_ids[]', '3');
+      params.append('status_ids[]', '4');
+    }
+    if (withSyncFlag) {
+      params.set('flipcalc_sync', '1');
+    }
+    return `https://www.vinted.co.uk/catalog?${params.toString()}`;
+  }
+
+  /**
+   * Build Vinted UK's internal catalog JSON API path/URL (used same-origin on vinted.co.uk).
+   */
+  function buildVintedApiPath(query, condition) {
+    const params = new URLSearchParams({
+      page: '1',
+      per_page: '36',
+      search_text: String(query || '').trim(),
+      order: 'relevance'
+    });
+    if (condition === 'new') {
+      params.append('status_ids[]', '6');
+      params.append('status_ids[]', '1');
+    } else if (condition === 'used') {
+      params.append('status_ids[]', '2');
+      params.append('status_ids[]', '3');
+      params.append('status_ids[]', '4');
+    }
+    return `/api/v2/catalog/items?${params.toString()}`;
+  }
+
+  function buildMarketCompsUrl(rawTitle, marketId, maxWords, condition) {
+    const market = COMPS_MARKETS[marketId] || COMPS_MARKETS.ebay_uk;
+    if (market.type === 'vinted') {
+      return buildVintedCompsUrl(rawTitle, maxWords, condition, true);
+    }
+    return buildEbaySoldCompsUrl(rawTitle, market.id, maxWords, condition);
+  }
+
+  /**
+   * Parse Vinted /api/v2/catalog/items JSON response into standardized comp items.
+   * Excludes excludeItemId so the currently viewed Vinted listing doesn't bias its own comps.
+   */
+  function parseVintedApiItems(json, fallbackCurrency, excludeItemId) {
+    const fb = String(fallbackCurrency || 'GBP').toUpperCase();
+    const excludeStr = excludeItemId ? String(excludeItemId) : '';
+    const rawList =
+      json && Array.isArray(json.items)
+        ? json.items
+        : Array.isArray(json)
+          ? json
+          : [];
+
+    const items = [];
+    for (const entry of rawList) {
+      if (!entry || typeof entry !== 'object') {
+        continue;
+      }
+      if (excludeStr && entry.id !== undefined && String(entry.id) === excludeStr) {
+        continue;
+      }
+
+      const rawTitle = String(entry.title || '').replace(/\s+/g, ' ').trim();
+      const brandTitle = String(entry.brand_title || '').replace(/\s+/g, ' ').trim();
+      const fullTitle =
+        brandTitle && !rawTitle.toLowerCase().includes(brandTitle.toLowerCase())
+          ? `${brandTitle} ${rawTitle}`.trim()
+          : rawTitle;
+
+      let amount = null;
+      let currency = fb;
+
+      if (entry.price && typeof entry.price === 'object') {
+        const parsed = parsePriceWithCurrency(
+          String(entry.price.amount !== undefined ? entry.price.amount : ''),
+          entry.price.currency_code || fb
+        );
+        if (parsed) {
+          amount = parsed.amount;
+          currency = parsed.currency;
+        }
+      } else if (entry.price !== undefined) {
+        const parsed = parsePriceWithCurrency(String(entry.price), entry.currency || fb);
+        if (parsed) {
+          amount = parsed.amount;
+          currency = parsed.currency;
+        }
+      }
+
+      if (!fullTitle || amount === null || amount <= 0) {
+        continue;
+      }
+
+      items.push({
+        title: fullTitle,
+        price: amount,
+        currency
+      });
+
+      if (items.length >= 40) {
+        break;
+      }
+    }
+
+    return { blocked: false, items };
+  }
+
+  /**
+   * Parse active Vinted UK catalog items directly from a live /catalog?search_text=... DOM document.
+   */
+  function parseVintedCatalogDocument(doc, fallbackCurrency) {
+    const fb = String(fallbackCurrency || 'GBP').toUpperCase();
+    if (!doc) {
+      return { blocked: false, items: [] };
+    }
+    const items = [];
+    const seenHref = new Set();
+
+    const cards = doc.querySelectorAll(
+      '[data-testid="grid-item"], .feed-grid__item, [data-testid*="product-item"]'
+    );
+    for (const card of cards) {
+      const link = card.querySelector('a[href*="/items/"]');
+      const href = link ? link.getAttribute('href') || '' : '';
+      if (href && seenHref.has(href)) {
+        continue;
+      }
+
+      // Vinted overlay links often embed "Title, brand: X, condition: Y, £15.00" in title/aria-label
+      const rawTitleAttr =
+        (link && (link.getAttribute('title') || link.getAttribute('aria-label'))) || '';
+      let title = '';
+      if (rawTitleAttr) {
+        title = rawTitleAttr.split(/,\s*(?:price:|£|\$|€|size:|brand:|condition:)/i)[0].trim();
+      }
+      if (!title) {
+        const titleEl = card.querySelector('[data-testid*="description-title"], h3, p');
+        title = titleEl ? (titleEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
+      }
+
+      let priceText = '';
+      const priceEl = card.querySelector(
+        '[data-testid*="price-text"], [data-testid*="item-price"], .new-item-box__title'
+      );
+      if (priceEl) {
+        priceText = (priceEl.textContent || '').trim();
+      } else if (rawTitleAttr) {
+        const m = rawTitleAttr.match(/(?:£|€|\$)\s*[0-9]+(?:[.,][0-9]{1,2})?/);
+        if (m) {
+          priceText = m[0];
+        }
+      }
+
+      const parsed = parsePriceWithCurrency(priceText, fb);
+      if (!title || !parsed || parsed.amount <= 0) {
+        continue;
+      }
+
+      if (href) {
+        seenHref.add(href);
+      }
+      items.push({
+        title,
+        price: parsed.amount,
+        currency: parsed.currency
+      });
+
+      if (items.length >= 40) {
+        break;
+      }
+    }
+
+    return { blocked: false, items };
   }
 
   function formatMoney(amount, currencyCode, showPlus) {
@@ -1241,6 +1481,7 @@
     CURRENCIES,
     FALLBACK_FX_RATES,
     EBAY_MARKETS,
+    COMPS_MARKETS,
     PLATFORMS,
     detectSiteFromHost,
     getCurrencySymbol,
@@ -1253,12 +1494,17 @@
     cleanTitleForSearch,
     enrichListingTitle,
     buildEbaySoldCompsUrl,
+    buildVintedCompsUrl,
+    buildVintedApiPath,
+    buildMarketCompsUrl,
     formatMoney,
     formatGBP,
     isBotChallengeHtml,
     parseEbaySoldDocument,
     parseEbaySoldHtmlString,
     parseEbaySoldHtml,
+    parseVintedApiItems,
+    parseVintedCatalogDocument,
     filterRelevantComps,
     analyzeSoldComps,
     evaluateFlipVerdict

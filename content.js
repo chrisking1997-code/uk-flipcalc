@@ -372,6 +372,39 @@
   }
 
   const SYNCED_COMPS_STORAGE_KEY = 'uk_flipcalc_synced_comps_v1';
+  const PREFS_STORAGE_KEY = 'uk_flipcalc_prefs_v1';
+
+  function loadUserPrefs() {
+    return new Promise((resolve) => {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.get(PREFS_STORAGE_KEY, (data) => {
+          if (chrome.runtime && chrome.runtime.lastError) {
+            resolve({});
+            return;
+          }
+          resolve((data && data[PREFS_STORAGE_KEY]) || {});
+        });
+        return;
+      }
+      try {
+        const raw = window.localStorage.getItem(PREFS_STORAGE_KEY);
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch (_) {
+        resolve({});
+      }
+    });
+  }
+
+  function saveUserPrefs(prefsObj) {
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({ [PREFS_STORAGE_KEY]: prefsObj }).catch(() => {});
+    }
+    try {
+      window.localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(prefsObj));
+    } catch (_) {
+      // Ignore storage errors
+    }
+  }
 
   function sendRuntimeMessage(payload, timeoutMs) {
     const limit = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : 9000;
@@ -406,9 +439,65 @@
     });
   }
 
-  async function fetchSoldHtmlDirectOrBg(market, query, forceRefresh, condition) {
+  function getCurrentVintedItemId() {
+    if (SITE !== 'vinted') {
+      return '';
+    }
+    const m = window.location.pathname.match(/\/items\/(\d+)/);
+    return m ? m[1] : '';
+  }
+
+  async function fetchMarketComps(market, query, forceRefresh, condition) {
     const cond = condition === 'used' || condition === 'new' ? condition : 'any';
     const sameOrigin = window.location.hostname.toLowerCase() === market.domain.toLowerCase();
+
+    if (market.type === 'vinted') {
+      const currentItemId = getCurrentVintedItemId();
+      if (sameOrigin) {
+        const apiPath = core.buildVintedApiPath(query, cond);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 7000);
+        try {
+          const resp = await fetch(apiPath, {
+            method: 'GET',
+            credentials: 'same-origin',
+            cache: forceRefresh ? 'no-store' : 'default',
+            headers: { Accept: 'application/json, text/plain, */*' },
+            signal: controller.signal
+          });
+          clearTimeout(timer);
+          if (resp.ok) {
+            const json = await resp.json();
+            const parsed = core.parseVintedApiItems(json, market.currency, currentItemId);
+            return { ok: true, items: parsed.items, blocked: false, via: 'vinted-same-origin' };
+          }
+          return { ok: false, error: `HTTP ${resp.status}` };
+        } catch (err) {
+          clearTimeout(timer);
+          return {
+            ok: false,
+            error: err && err.name === 'AbortError' ? 'Timed out' : 'Vinted fetch failed'
+          };
+        }
+      }
+
+      const bgResp = await sendRuntimeMessage(
+        {
+          type: 'FETCH_VINTED_COMPS',
+          query,
+          condition: cond,
+          forceRefresh: Boolean(forceRefresh)
+        },
+        12000
+      );
+      if (!bgResp || !bgResp.ok || !bgResp.json) {
+        return { ok: false, error: (bgResp && bgResp.error) || 'Vinted lookup failed' };
+      }
+      const parsed = core.parseVintedApiItems(bgResp.json, market.currency, '');
+      return { ok: true, items: parsed.items, blocked: false, via: 'vinted-bg' };
+    }
+
+    // eBay market: same-origin HTML fetch first, fallback to background worker
     if (sameOrigin) {
       const params = new URLSearchParams({
         _nkw: query,
@@ -433,11 +522,12 @@
         });
         clearTimeout(timer);
         if (/splashui\/challenge|\/challenge\b/i.test(resp.url || '')) {
-          return { ok: true, blocked: true, html: '' };
+          return { ok: true, blocked: true, items: [] };
         }
         if (resp.ok) {
           const html = await resp.text();
-          return { ok: true, html, via: 'same-origin' };
+          const parsed = core.parseEbaySoldHtml(html, market.currency);
+          return { ok: true, blocked: parsed.blocked, items: parsed.items, via: 'same-origin' };
         }
       } catch (_) {
         clearTimeout(timer);
@@ -445,7 +535,7 @@
       }
     }
 
-    return sendRuntimeMessage(
+    const bgResp = await sendRuntimeMessage(
       {
         type: 'FETCH_SOLD_COMPS',
         marketId: market.id,
@@ -455,6 +545,15 @@
       },
       16000
     );
+
+    if (bgResp && bgResp.blocked) {
+      return { ok: true, blocked: true, items: [] };
+    }
+    if (!bgResp || !bgResp.ok || !bgResp.html) {
+      return { ok: false, error: (bgResp && bgResp.error) || 'Lookup failed' };
+    }
+    const parsed = core.parseEbaySoldHtml(bgResp.html, market.currency);
+    return { ok: true, blocked: parsed.blocked, items: parsed.items, via: 'ebay-bg' };
   }
 
   function normalizeQueryKey(q) {
@@ -503,20 +602,7 @@
     return s === p || s === b || (b && s.startsWith(b)) || (p && p.startsWith(s));
   }
 
-  /**
-   * On eBay Sold & Completed search pages (/sch/* with LH_Sold=1), read live rendered sold
-   * prices from the page DOM, display a compact summary pill, and sync back to item tabs.
-   */
-  function initSoldSearchSyncWidget() {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('LH_Sold') !== '1') {
-      return;
-    }
-    const query = (params.get('_nkw') || '').trim();
-    if (!query) {
-      return;
-    }
-
+  function createSyncPillHost(initialHtml) {
     const host = document.createElement('div');
     host.id = HOST_ID;
     const shadow = host.attachShadow({ mode: 'open' });
@@ -537,9 +623,30 @@
     shadow.appendChild(style);
     const pill = document.createElement('div');
     pill.className = 'fc-sync-pill';
-    pill.innerHTML = `<span class="fc-sync-logo">${core.getCurrencySymbol(SITE_INFO.currency)}</span><span>FlipCalc reading sold comps...</span>`;
+    pill.innerHTML = initialHtml;
     shadow.appendChild(pill);
     (document.body || document.documentElement).appendChild(host);
+    return pill;
+  }
+
+  /**
+   * On eBay Sold & Completed search pages (/sch/* with LH_Sold=1), read live rendered sold
+   * prices from the page DOM, display a compact summary pill, and sync back to item tabs.
+   */
+  function initSoldSearchSyncWidget() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('LH_Sold') !== '1') {
+      return;
+    }
+    const query = (params.get('_nkw') || '').trim();
+    if (!query) {
+      return;
+    }
+
+    const sym = core.getCurrencySymbol(SITE_INFO.currency);
+    const pill = createSyncPillHost(
+      `<span class="fc-sync-logo">${sym}</span><span>FlipCalc reading sold comps...</span>`
+    );
 
     const runParse = () => {
       const parsed = core.parseEbaySoldDocument(document, SITE_INFO.currency);
@@ -550,13 +657,14 @@
       const summary = core.analyzeSoldComps(parsed.items, {
         targetCurrency: SITE_INFO.currency,
         marketCurrency: SITE_INFO.currency,
-        fxRates: core.FALLBACK_FX_RATES
+        fxRates: core.FALLBACK_FX_RATES,
+        query
       });
       const med = core.formatMoney(summary.median, SITE_INFO.currency);
       const low = core.formatMoney(summary.p25, SITE_INFO.currency);
       const high = core.formatMoney(summary.p75, SITE_INFO.currency);
       pill.innerHTML = `
-        <span class="fc-sync-logo">${core.getCurrencySymbol(SITE_INFO.currency)}</span>
+        <span class="fc-sync-logo">${sym}</span>
         <span>${summary.count} sold</span>
         <span class="fc-sync-med">Med ${med}</span>
         <span class="fc-sync-sub">(${low}–${high}) • Synced ✓</span>
@@ -567,9 +675,60 @@
     if (!runParse()) {
       setTimeout(() => {
         if (!runParse()) {
-          pill.innerHTML = `<span class="fc-sync-logo">${core.getCurrencySymbol(SITE_INFO.currency)}</span><span class="fc-sync-sub">FlipCalc: no sold prices detected on this page</span>`;
+          pill.innerHTML = `<span class="fc-sync-logo">${sym}</span><span class="fc-sync-sub">FlipCalc: no sold prices detected on this page</span>`;
         }
       }, 1200);
+    }
+  }
+
+  /**
+   * On Vinted UK catalog pages opened from FlipCalc (flipcalc_sync=1), read live active
+   * prices from the rendered catalog grid and sync back to eBay/Vinted item tabs.
+   */
+  function initVintedCatalogSyncWidget() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('flipcalc_sync') !== '1') {
+      return;
+    }
+    const query = (params.get('search_text') || '').trim();
+    if (!query) {
+      return;
+    }
+
+    const pill = createSyncPillHost(
+      `<span class="fc-sync-logo">£</span><span>FlipCalc reading Vinted active prices...</span>`
+    );
+
+    const runParse = () => {
+      const parsed = core.parseVintedCatalogDocument(document, 'GBP');
+      if (parsed.items.length === 0) {
+        return false;
+      }
+      saveSyncedComps('vinted_uk', query, parsed.items);
+      const summary = core.analyzeSoldComps(parsed.items, {
+        targetCurrency: 'GBP',
+        marketCurrency: 'GBP',
+        fxRates: core.FALLBACK_FX_RATES,
+        query
+      });
+      const med = core.formatMoney(summary.median, 'GBP');
+      const low = core.formatMoney(summary.p25, 'GBP');
+      const high = core.formatMoney(summary.p75, 'GBP');
+      pill.innerHTML = `
+        <span class="fc-sync-logo">£</span>
+        <span>${summary.count} active</span>
+        <span class="fc-sync-med">Med ${med}</span>
+        <span class="fc-sync-sub">(${low}–${high}) • Synced ✓</span>
+      `;
+      return true;
+    };
+
+    if (!runParse()) {
+      setTimeout(() => {
+        if (!runParse()) {
+          pill.innerHTML = `<span class="fc-sync-logo">£</span><span class="fc-sync-sub">FlipCalc: no Vinted listings detected</span>`;
+        }
+      }, 1500);
     }
   }
 
@@ -601,26 +760,31 @@
       shadow.appendChild(link);
     }
 
-    const defaultMarket = core.EBAY_MARKETS[SITE_INFO.marketId] || core.EBAY_MARKETS.ebay_uk;
-    const marketOptionsHtml = Object.values(core.EBAY_MARKETS)
-      .map(
-        (m) =>
-          `<option value="${m.id}"${m.id === defaultMarket.id ? ' selected' : ''}>${m.name} (${core.getCurrencySymbol(m.currency)})</option>`
-      )
+    const initialDefaultMarketId = SITE === 'vinted' ? 'vinted_uk' : SITE_INFO.marketId || 'ebay_uk';
+    const defaultMarket = core.COMPS_MARKETS[initialDefaultMarketId] || core.COMPS_MARKETS.ebay_uk;
+    const marketOptionsHtml = Object.values(core.COMPS_MARKETS)
+      .map((m) => {
+        const tag = m.priceType === 'active' ? 'Active' : 'Sold';
+        return `<option value="${m.id}"${m.id === defaultMarket.id ? ' selected' : ''}>${m.name} (${core.getCurrencySymbol(m.currency)} · ${tag})</option>`;
+      })
       .join('');
 
+    const defaultPlatformId =
+      SITE === 'vinted' ? 'ebay_private' : defaultMarket.defaultPlatform || 'ebay_private';
     const platformOptionsHtml = Object.values(core.PLATFORMS)
       .map(
         (p) =>
-          `<option value="${p.id}"${p.id === defaultMarket.defaultPlatform ? ' selected' : ''}>${p.label}</option>`
+          `<option value="${p.id}"${p.id === defaultPlatformId ? ' selected' : ''}>${p.label}</option>`
       )
       .join('');
 
+    const initialOutbound =
+      SITE === 'vinted' ? 3.5 : defaultMarket.defaultOutbound;
     const initialSymbol = core.getCurrencySymbol(SITE_INFO.currency);
 
     const wrapper = document.createElement('div');
     wrapper.innerHTML = `
-      <section class="fc-card" id="fc-card" aria-label="FlipCalc Profit & Sold Comps Calculator">
+      <section class="fc-card" id="fc-card" aria-label="FlipCalc Profit & Market Comps Calculator">
         <header class="fc-header">
           <div class="fc-brand">
             <span class="fc-logo" id="fc-logo" aria-hidden="true">${initialSymbol}</span>
@@ -686,7 +850,7 @@
               </div>
               <div class="fc-input-wrap">
                 <span class="fc-prefix" data-currency-prefix>${initialSymbol}</span>
-                <input type="number" class="fc-input fc-has-prefix fc-highlight" id="fc-resale-price" min="0" step="0.01" placeholder="Auto-checking..." inputmode="decimal" />
+                <input type="number" class="fc-input fc-has-prefix fc-highlight" id="fc-resale-price" min="0" step="0.01" placeholder="Checking..." inputmode="decimal" />
               </div>
             </div>
 
@@ -696,7 +860,7 @@
               </div>
               <div class="fc-input-wrap">
                 <span class="fc-prefix" data-currency-prefix>${initialSymbol}</span>
-                <input type="number" class="fc-input fc-has-prefix" id="fc-outbound" min="0" step="0.01" value="${defaultMarket.defaultOutbound.toFixed(2)}" inputmode="decimal" />
+                <input type="number" class="fc-input fc-has-prefix" id="fc-outbound" min="0" step="0.01" value="${initialOutbound.toFixed(2)}" inputmode="decimal" />
               </div>
             </div>
           </div>
@@ -738,8 +902,8 @@
                 <span class="fc-count-pill" id="fc-comps-count" data-confidence="none">Checking...</span>
               </div>
               <div class="fc-market-head-right">
-                <button type="button" class="fc-cond-btn" id="fc-cond-btn" data-cond="any" title="Filter eBay comps by condition (click to cycle Any / Used / New)">Any</button>
-                <button type="button" class="fc-icon-btn fc-icon-btn-sm" id="fc-comps-refresh" title="Refresh Sold Comps now" aria-label="Refresh Sold Comps">
+                <button type="button" class="fc-cond-btn" id="fc-cond-btn" data-cond="any" title="Filter comps by condition (click to cycle Any / Used / New)">Any</button>
+                <button type="button" class="fc-icon-btn fc-icon-btn-sm" id="fc-comps-refresh" title="Refresh Market Comps now" aria-label="Refresh Market Comps">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
                     <path d="M3 3v5h5"/>
@@ -753,7 +917,7 @@
             <div class="fc-comps-status" id="fc-comps-status">
               <div class="fc-comps-status-left">
                 <span class="fc-spinner fc-visible" id="fc-comps-spinner"></span>
-                <span id="fc-comps-status-text">Checking eBay sold listings...</span>
+                <span id="fc-comps-status-text">Checking market prices...</span>
               </div>
             </div>
 
@@ -762,7 +926,7 @@
                 <span class="fc-tier-label">Low (P25)</span>
                 <span class="fc-tier-price" id="fc-tier-p25-val">—</span>
               </button>
-              <button type="button" class="fc-tier-btn fc-active" data-tier="median" id="fc-tier-median" title="Recommended typical sold price (Median)">
+              <button type="button" class="fc-tier-btn fc-active" data-tier="median" id="fc-tier-median" title="Recommended typical price (Median)">
                 <span class="fc-tier-label">Median</span>
                 <span class="fc-tier-price" id="fc-tier-median-val">—</span>
               </button>
@@ -803,16 +967,27 @@
               </div>
             </div>
 
+            <div class="fc-offer-bar" id="fc-offer-bar" data-state="neutral">
+              <span class="fc-offer-left">
+                <span>Max Offer</span>
+                <button type="button" class="fc-roi-pill" id="fc-roi-target-btn" title="Click to cycle target ROI (20% / 25% / 30% / 50%)">25% ROI</button>
+              </span>
+              <span class="fc-offer-value" id="fc-max-offer">—</span>
+            </div>
+
             <div class="fc-fee-note" id="fc-fee-note">Enter Target Resale or pick a Market Comps price</div>
           </div>
 
-          <button type="button" class="fc-comps-btn" id="fc-comps-btn">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="11" cy="11" r="7"/>
-              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-            </svg>
-            <span id="fc-comps-btn-label">View ${defaultMarket.name} Sold Comps</span>
-          </button>
+          <div class="fc-actions-row">
+            <button type="button" class="fc-comps-btn" id="fc-comps-btn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="7"/>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <span id="fc-comps-btn-label">View ${defaultMarket.name}</span>
+            </button>
+            <button type="button" class="fc-cross-btn" id="fc-cross-btn" title="Cross-check on the other platform &amp; auto-sync">eBay Sold ↗</button>
+          </div>
           <div class="fc-query-preview" id="fc-query-preview"></div>
         </div>
       </section>
@@ -870,9 +1045,13 @@
       totalCost: shadow.getElementById('fc-total-cost'),
       roi: shadow.getElementById('fc-roi'),
       breakeven: shadow.getElementById('fc-breakeven'),
+      offerBar: shadow.getElementById('fc-offer-bar'),
+      roiTargetBtn: shadow.getElementById('fc-roi-target-btn'),
+      maxOffer: shadow.getElementById('fc-max-offer'),
       feeNote: shadow.getElementById('fc-fee-note'),
       compsBtn: shadow.getElementById('fc-comps-btn'),
       compsBtnLabel: shadow.getElementById('fc-comps-btn-label'),
+      crossBtn: shadow.getElementById('fc-cross-btn'),
       queryPreview: shadow.getElementById('fc-query-preview'),
       currencyPrefixes: shadow.querySelectorAll('[data-currency-prefix]')
     };
@@ -888,6 +1067,8 @@
 
     let workingCurrency = SITE_INFO.currency || 'GBP';
     let selectedCondition = 'any';
+    let targetRoiPct = 25;
+    let userPrefs = {};
     let fxRates = Object.assign({}, core.FALLBACK_FX_RATES);
     let fxIsLive = false;
     let rawCompsItems = [];
@@ -933,18 +1114,32 @@
     }
 
     function getSelectedMarket() {
-      return core.EBAY_MARKETS[els.marketSelect.value] || core.EBAY_MARKETS.ebay_uk;
+      return core.COMPS_MARKETS[els.marketSelect.value] || core.COMPS_MARKETS.ebay_uk;
+    }
+
+    function getCrossMarket() {
+      const current = getSelectedMarket();
+      if (current.type === 'vinted') {
+        return core.COMPS_MARKETS.ebay_uk;
+      }
+      return core.COMPS_MARKETS.vinted_uk;
     }
 
     function updateQueryPreview() {
       const market = getSelectedMarket();
-      els.compsBtnLabel.textContent = `View ${market.name} Sold Comps`;
+      const cross = getCrossMarket();
+      const kindLabel = market.priceType === 'active' ? 'Active' : 'Sold';
+      els.compsBtnLabel.textContent = `View ${market.name} ${kindLabel}`;
+      els.crossBtn.textContent =
+        cross.type === 'vinted' ? 'Vinted UK ↗' : `${cross.name} Sold ↗`;
+      els.crossBtn.title = `Open ${cross.name} (${cross.priceType === 'active' ? 'Active' : 'Sold'}) & auto-sync back`;
+
       const cleaned = core.cleanTitleForSearch(els.titleInput.value);
       if (cleaned) {
         els.queryPreview.textContent = `Search (${market.shortName}): "${cleaned}"`;
         els.queryPreview.title = cleaned;
       } else {
-        els.queryPreview.textContent = `Enter a title to search ${market.name} Sold Comps`;
+        els.queryPreview.textContent = `Enter a title to search ${market.name}`;
         els.queryPreview.title = '';
       }
     }
@@ -1005,13 +1200,14 @@
     function applySummaryToUi(summary, allowAutoFill) {
       lastCompsSummary = summary;
       const market = getSelectedMarket();
+      const unitWord = market.priceType === 'active' ? 'active' : 'sold';
       els.resaleInput.placeholder = 'Enter price';
       els.compsRefreshBtn.classList.remove('fc-spinning');
 
       if (!summary || summary.count === 0) {
         els.tierGrid.classList.add('fc-hidden');
         renderSampleComps(null);
-        els.compsCount.textContent = '0 sold';
+        els.compsCount.textContent = `0 ${unitWord}`;
         els.compsCount.dataset.confidence = 'none';
         if (!els.resaleInput.value) {
           els.resaleHint.textContent = 'Manual';
@@ -1021,7 +1217,7 @@
         return;
       }
 
-      els.compsCount.textContent = `${summary.count} sold`;
+      els.compsCount.textContent = `${summary.count} ${unitWord}`;
       els.compsCount.dataset.confidence = summary.confidence;
       els.tierP25Val.textContent = core.formatMoney(summary.p25, workingCurrency);
       els.tierMedianVal.textContent = core.formatMoney(summary.median, workingCurrency);
@@ -1079,16 +1275,22 @@
       recalculate();
     }
 
-    function applySyncedIfMatching(synced, forceFill) {
+    function applySyncedIfMatching(synced, forceFill, allowMarketSwitch) {
       if (!synced || !Array.isArray(synced.items) || synced.items.length === 0) {
         return false;
       }
       if (Date.now() - (synced.updatedAt || 0) > 15 * 60 * 1000) {
         return false;
       }
-      const market = getSelectedMarket();
-      if (synced.marketId !== market.id) {
+      const syncedMarket = core.COMPS_MARKETS[synced.marketId];
+      if (!syncedMarket) {
         return false;
+      }
+      const currentMarket = getSelectedMarket();
+      if (syncedMarket.id !== currentMarket.id) {
+        if (!allowMarketSwitch) {
+          return false;
+        }
       }
       const title = els.titleInput.value.trim();
       const primaryQuery = core.cleanTitleForSearch(title, 8);
@@ -1097,11 +1299,16 @@
         return false;
       }
 
+      if (syncedMarket.id !== currentMarket.id && allowMarketSwitch) {
+        els.marketSelect.value = syncedMarket.id;
+        updateQueryPreview();
+      }
+
       rawCompsItems = synced.items;
-      lastQueriedKey = `${market.id}::${selectedCondition}::${primaryQuery.toLowerCase()}`;
+      lastQueriedKey = `${syncedMarket.id}::${selectedCondition}::${primaryQuery.toLowerCase()}`;
       const summary = core.analyzeSoldComps(synced.items, {
         targetCurrency: workingCurrency,
-        marketCurrency: market.currency,
+        marketCurrency: syncedMarket.currency,
         fxRates,
         query: primaryQuery
       });
@@ -1115,9 +1322,10 @@
       const market = getSelectedMarket();
       const primaryQuery = core.cleanTitleForSearch(title, 8);
       const broaderQuery = core.cleanTitleForSearch(title, 4);
+      const unitWord = market.priceType === 'active' ? 'active' : 'sold';
 
       if (!primaryQuery) {
-        setCompsMessageState('No title', 'Enter an item title to check sold prices');
+        setCompsMessageState('No title', 'Enter an item title to check prices');
         return;
       }
 
@@ -1133,19 +1341,19 @@
         return;
       }
 
-      // Use recently synced comps from an opened Sold Comps tab if available
+      // Use recently synced comps from an opened Sold / Vinted tab if matching current market
       if (!opts.forceRefresh) {
         const synced = await readSyncedComps();
-        if (applySyncedIfMatching(synced, Boolean(opts.forceAutoFill))) {
+        if (applySyncedIfMatching(synced, Boolean(opts.forceAutoFill), false)) {
           return;
         }
       }
 
       const seq = ++compsRequestSeq;
       lastQueriedKey = requestKey;
-      setCompsLoadingState(`Checking ${market.name} sold prices...`);
+      setCompsLoadingState(`Checking ${market.name} ${unitWord} prices...`);
 
-      const resp = await fetchSoldHtmlDirectOrBg(
+      const resp = await fetchMarketComps(
         market,
         primaryQuery,
         Boolean(opts.forceRefresh),
@@ -1161,24 +1369,19 @@
         return;
       }
 
-      if (!resp || !resp.ok || !resp.html) {
+      if (!resp || !resp.ok || !Array.isArray(resp.items)) {
         const errHint = resp && resp.error ? ` (${resp.error})` : '';
         setCompsMessageState('Manual', `Auto-check failed${errHint} — click below to sync`);
         return;
       }
 
-      let parsed = core.parseEbaySoldHtml(resp.html, market.currency);
+      let matchedItems = resp.items;
       let usedQuery = primaryQuery;
 
-      if (parsed.blocked) {
-        setCompsMessageState('Verify', 'Click button below to view & auto-sync prices');
-        return;
-      }
-
-      // If strict 8-word title had < 2 sold matches, retry once with broader 4-word core query
-      if (parsed.items.length < 2 && broaderQuery && broaderQuery.toLowerCase() !== primaryQuery.toLowerCase()) {
+      // If strict 8-word title had < 2 matches, retry once with broader 4-word core query
+      if (matchedItems.length < 2 && broaderQuery && broaderQuery.toLowerCase() !== primaryQuery.toLowerCase()) {
         setCompsLoadingState(`Broadening search on ${market.name}...`);
-        const retryResp = await fetchSoldHtmlDirectOrBg(
+        const retryResp = await fetchMarketComps(
           market,
           broaderQuery,
           Boolean(opts.forceRefresh),
@@ -1194,28 +1397,21 @@
           return;
         }
 
-        if (retryResp && retryResp.ok && retryResp.html) {
-          const retryParsed = core.parseEbaySoldHtml(retryResp.html, market.currency);
-          if (retryParsed.blocked) {
-            setCompsMessageState('Verify', 'Click button below to view & auto-sync prices');
-            return;
-          }
-          if (retryParsed.items.length > parsed.items.length) {
-            parsed = retryParsed;
-            usedQuery = broaderQuery;
-          }
+        if (retryResp && retryResp.ok && Array.isArray(retryResp.items) && retryResp.items.length > matchedItems.length) {
+          matchedItems = retryResp.items;
+          usedQuery = broaderQuery;
         }
       }
 
       els.compsRefreshBtn.classList.remove('fc-spinning');
-      rawCompsItems = parsed.items;
+      rawCompsItems = matchedItems;
 
-      if (parsed.items.length === 0) {
-        setCompsMessageState('0 sold', `No sold comps matched — click below to check & sync`);
+      if (matchedItems.length === 0) {
+        setCompsMessageState(`0 ${unitWord}`, `No ${unitWord} comps matched — click below to check`);
         return;
       }
 
-      const summary = core.analyzeSoldComps(parsed.items, {
+      const summary = core.analyzeSoldComps(matchedItems, {
         targetCurrency: workingCurrency,
         marketCurrency: market.currency,
         fxRates,
@@ -1238,12 +1434,30 @@
         platform: els.platformSelect.value,
         customFeePct: els.customFeeInput.value,
         currency: workingCurrency,
+        targetRoiPct,
         fxRates
       });
 
       els.totalCost.textContent = core.formatMoney(res.totalCost, workingCurrency, false);
       els.breakeven.textContent =
         res.breakEvenPrice !== null ? core.formatMoney(res.breakEvenPrice, workingCurrency, false) : 'N/A';
+
+      els.roiTargetBtn.textContent = `${targetRoiPct}% ROI`;
+      if (res.hasResaleInput && res.maxBuyPrice !== null) {
+        if (res.maxBuyPrice <= 0) {
+          els.offerBar.dataset.state = 'impossible';
+          els.maxOffer.textContent = 'Too high (skip)';
+        } else if (res.buyPrice <= res.maxBuyPrice) {
+          els.offerBar.dataset.state = 'good';
+          els.maxOffer.textContent = `≤ ${core.formatMoney(res.maxBuyPrice, workingCurrency, false)} ✓`;
+        } else {
+          els.offerBar.dataset.state = 'negotiate';
+          els.maxOffer.textContent = `Offer ≤ ${core.formatMoney(res.maxBuyPrice, workingCurrency, false)}`;
+        }
+      } else {
+        els.offerBar.dataset.state = 'neutral';
+        els.maxOffer.textContent = '—';
+      }
 
       const verdict = core.evaluateFlipVerdict(res, lastCompsSummary, workingCurrency, fxRates);
       els.verdictBox.dataset.tone = verdict.tone;
@@ -1390,20 +1604,47 @@
       recalculate();
     });
 
+    function persistCurrentPrefs() {
+      const next = Object.assign({}, userPrefs);
+      next.marketBySite = Object.assign({}, next.marketBySite || {}, {
+        [SITE]: els.marketSelect.value
+      });
+      next.platformBySite = Object.assign({}, next.platformBySite || {}, {
+        [SITE]: els.platformSelect.value
+      });
+      const outNum = parseFloat(els.outboundInput.value);
+      if (Number.isFinite(outNum) && outNum >= 0) {
+        next.outboundByCurrency = Object.assign({}, next.outboundByCurrency || {}, {
+          [workingCurrency]: outNum
+        });
+      }
+      const customNum = parseFloat(els.customFeeInput.value);
+      if (Number.isFinite(customNum) && customNum >= 0) {
+        next.customFeePct = customNum;
+      }
+      next.targetRoiPct = targetRoiPct;
+      userPrefs = next;
+      saveUserPrefs(next);
+    }
+
     els.outboundInput.addEventListener('input', () => {
       dirty.outboundShipping = true;
+      persistCurrentPrefs();
       recalculate();
     });
 
     els.marketSelect.addEventListener('change', () => {
       const market = getSelectedMarket();
-      if (els.platformSelect.value !== 'custom' && els.platformSelect.value !== 'vinted_uk') {
-        els.platformSelect.value = market.defaultPlatform;
+      if (els.platformSelect.value !== 'custom') {
+        if (market.type !== 'vinted' && els.platformSelect.value !== 'vinted_uk') {
+          els.platformSelect.value = market.defaultPlatform;
+        }
       }
       dirty.resalePrice = false;
       activeTier = 'median';
       rawCompsItems = [];
       lastQueriedKey = '';
+      persistCurrentPrefs();
       updateQueryPreview();
       updateFxNote();
       fetchAndAnalyzeComps({ forceRefresh: false, forceAutoFill: true });
@@ -1421,8 +1662,22 @@
       fetchAndAnalyzeComps({ forceRefresh: false, forceAutoFill: true });
     });
 
-    els.platformSelect.addEventListener('change', recalculate);
-    els.customFeeInput.addEventListener('input', recalculate);
+    els.roiTargetBtn.addEventListener('click', () => {
+      const tiers = [20, 25, 30, 50];
+      const nextIdx = (tiers.indexOf(targetRoiPct) + 1) % tiers.length;
+      targetRoiPct = tiers[nextIdx];
+      persistCurrentPrefs();
+      recalculate();
+    });
+
+    els.platformSelect.addEventListener('change', () => {
+      persistCurrentPrefs();
+      recalculate();
+    });
+    els.customFeeInput.addEventListener('input', () => {
+      persistCurrentPrefs();
+      recalculate();
+    });
 
     function handleTierClick(tierName) {
       if (!lastCompsSummary || lastCompsSummary[tierName] === null) {
@@ -1467,7 +1722,14 @@
     els.compsBtn.addEventListener('click', () => {
       const title = els.titleInput.value.trim();
       const market = getSelectedMarket();
-      const url = core.buildEbaySoldCompsUrl(title, market.id, 8, selectedCondition);
+      const url = core.buildMarketCompsUrl(title, market.id, 8, selectedCondition);
+      window.open(url, '_blank', 'noopener,noreferrer');
+    });
+
+    els.crossBtn.addEventListener('click', () => {
+      const title = els.titleInput.value.trim();
+      const cross = getCrossMarket();
+      const url = core.buildMarketCompsUrl(title, cross.id, 8, selectedCondition);
       window.open(url, '_blank', 'noopener,noreferrer');
     });
 
@@ -1496,11 +1758,40 @@
       }
     });
 
-    // Initial extraction + lightweight observer for async React/eBay hydration
+    // Initial DOM extraction
     const completeOnInit = syncFromDom(false);
-    if (els.titleInput.value.trim()) {
-      scheduleAutoComps(350, false);
-    }
+
+    // Restore saved user defaults (market, fee platform, outbound post, target ROI) before auto-fetching comps
+    loadUserPrefs().then((prefs) => {
+      userPrefs = prefs || {};
+      if (userPrefs.marketBySite && userPrefs.marketBySite[SITE] && core.COMPS_MARKETS[userPrefs.marketBySite[SITE]]) {
+        els.marketSelect.value = userPrefs.marketBySite[SITE];
+      }
+      if (userPrefs.platformBySite && userPrefs.platformBySite[SITE] && core.PLATFORMS[userPrefs.platformBySite[SITE]]) {
+        els.platformSelect.value = userPrefs.platformBySite[SITE];
+      }
+      if (Number.isFinite(userPrefs.customFeePct)) {
+        els.customFeeInput.value = String(userPrefs.customFeePct);
+      }
+      if (
+        !dirty.outboundShipping &&
+        userPrefs.outboundByCurrency &&
+        Number.isFinite(userPrefs.outboundByCurrency[workingCurrency])
+      ) {
+        els.outboundInput.value = userPrefs.outboundByCurrency[workingCurrency].toFixed(2);
+      }
+      if (Number.isFinite(userPrefs.targetRoiPct) && userPrefs.targetRoiPct > 0) {
+        targetRoiPct = userPrefs.targetRoiPct;
+      }
+
+      updateQueryPreview();
+      updateFxNote();
+      recalculate();
+
+      if (els.titleInput.value.trim()) {
+        scheduleAutoComps(250, false);
+      }
+    });
 
     let observer = null;
     let debounceTimer = null;
@@ -1553,14 +1844,14 @@
       }
     };
 
-    // Live-sync sold comps whenever user opens a Sold Comps tab
+    // Live-sync comps whenever user opens an eBay Sold or Vinted Active comps tab
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
       chrome.storage.onChanged.addListener((changes, areaName) => {
         if (areaName !== 'local' || !changes[SYNCED_COMPS_STORAGE_KEY]) {
           return;
         }
         const nextVal = changes[SYNCED_COMPS_STORAGE_KEY].newValue;
-        applySyncedIfMatching(nextVal, true);
+        applySyncedIfMatching(nextVal, true, true);
       });
     }
 
@@ -1571,6 +1862,10 @@
   function bootstrap() {
     if (SITE === 'ebay' && window.location.pathname.startsWith('/sch/')) {
       initSoldSearchSyncWidget();
+      return;
+    }
+    if (SITE === 'vinted' && window.location.pathname.startsWith('/catalog')) {
+      initVintedCatalogSyncWidget();
       return;
     }
     createWidget();

@@ -206,6 +206,78 @@ async function fetchSoldCompsHtml(marketId, query, forceRefresh, condition) {
   }
 }
 
+function buildVintedApiUrl(query, condition) {
+  const params = new URLSearchParams({
+    page: '1',
+    per_page: '36',
+    search_text: String(query || '').trim(),
+    order: 'relevance'
+  });
+  if (condition === 'new') {
+    params.append('status_ids[]', '6');
+    params.append('status_ids[]', '1');
+  } else if (condition === 'used') {
+    params.append('status_ids[]', '2');
+    params.append('status_ids[]', '3');
+    params.append('status_ids[]', '4');
+  }
+  return `https://www.vinted.co.uk/api/v2/catalog/items?${params.toString()}`;
+}
+
+async function fetchVintedCompsJson(query, forceRefresh, condition) {
+  const trimmedQuery = String(query || '').trim();
+  const cond = condition === 'used' || condition === 'new' ? condition : 'any';
+  const url = buildVintedApiUrl(trimmedQuery, cond);
+
+  if (!trimmedQuery) {
+    return { ok: false, error: 'Empty search query', url };
+  }
+
+  const cacheKey = `vinted_uk::${cond}::${trimmedQuery.toLowerCase()}`;
+  if (!forceRefresh && compsCache.has(cacheKey)) {
+    const entry = compsCache.get(cacheKey);
+    if (Date.now() - entry.ts < COMPS_TTL_MS && entry.json) {
+      return { ok: true, json: entry.json, url, fromCache: true };
+    }
+    compsCache.delete(cacheKey);
+  }
+
+  try {
+    const resp = await fetchWithTimeout(
+      url,
+      {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: { Accept: 'application/json, text/plain, */*' }
+      },
+      7500
+    );
+
+    if (!resp.ok) {
+      return { ok: false, error: `HTTP ${resp.status}`, url };
+    }
+
+    const json = await resp.json();
+    if (compsCache.size >= COMPS_MAX_CACHE) {
+      const oldestKey = compsCache.keys().next().value;
+      compsCache.delete(oldestKey);
+    }
+    compsCache.set(cacheKey, { json, ts: Date.now() });
+
+    return { ok: true, json, url, fromCache: false };
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err && err.name === 'AbortError'
+          ? 'Timed out'
+          : String(err && err.message ? err.message : err),
+      url
+    };
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || typeof message !== 'object') {
     return false;
@@ -220,6 +292,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === 'FETCH_SOLD_COMPS') {
     fetchSoldCompsHtml(message.marketId, message.query, Boolean(message.forceRefresh), message.condition)
+      .then((res) => sendResponse(res))
+      .catch((err) => sendResponse({ ok: false, error: String(err) }));
+    return true;
+  }
+
+  if (message.type === 'FETCH_VINTED_COMPS') {
+    fetchVintedCompsJson(message.query, Boolean(message.forceRefresh), message.condition)
       .then((res) => sendResponse(res))
       .catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true;
