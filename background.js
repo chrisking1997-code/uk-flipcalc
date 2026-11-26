@@ -208,23 +208,53 @@ async function fetchSoldCompsHtml(marketId, query, forceRefresh, condition) {
 
 function buildVintedApiUrl(query, condition) {
   const params = new URLSearchParams({
+    search_text: String(query || '').trim(),
     page: '1',
     per_page: '36',
-    search_text: String(query || '').trim(),
     order: 'relevance'
   });
   if (condition === 'new') {
-    params.append('status_ids[]', '6');
-    params.append('status_ids[]', '1');
+    params.set('attribute_ids[status]', '6,1');
   } else if (condition === 'used') {
-    params.append('status_ids[]', '2');
-    params.append('status_ids[]', '3');
-    params.append('status_ids[]', '4');
+    params.set('attribute_ids[status]', '2,3,4');
   }
-  return `https://www.vinted.co.uk/api/v2/catalog/items?${params.toString()}`;
+  return `https://api.vinted.co.uk/svc-catalogue/items?${params.toString()}`;
 }
 
-async function fetchVintedCompsJson(query, forceRefresh, condition) {
+let cachedVintedAnonId = '';
+
+async function initVintedSession() {
+  try {
+    const resp = await fetchWithTimeout(
+      'https://www.vinted.co.uk/',
+      {
+        method: 'HEAD',
+        credentials: 'include',
+        cache: 'no-store'
+      },
+      5000
+    );
+    const anonId = resp.headers.get('x-anon-id');
+    if (anonId) {
+      cachedVintedAnonId = anonId;
+    }
+  } catch (_) {
+    // Proceed without blocking; retry will use whatever cookies Chrome holds
+  }
+}
+
+function getVintedHeaders() {
+  const headers = {
+    Accept: 'application/json, text/plain, */*',
+    Locale: 'en-GB'
+  };
+  if (cachedVintedAnonId) {
+    headers['X-Anon-Id'] = cachedVintedAnonId;
+  }
+  return headers;
+}
+
+async function fetchVintedCompsJson(query, forceRefresh, condition, currentItemId) {
   const trimmedQuery = String(query || '').trim();
   const cond = condition === 'used' || condition === 'new' ? condition : 'any';
   const url = buildVintedApiUrl(trimmedQuery, cond);
@@ -243,29 +273,62 @@ async function fetchVintedCompsJson(query, forceRefresh, condition) {
   }
 
   try {
-    const resp = await fetchWithTimeout(
+    let resp = await fetchWithTimeout(
       url,
       {
         method: 'GET',
         credentials: 'include',
         cache: 'no-store',
-        headers: { Accept: 'application/json, text/plain, */*' }
+        headers: getVintedHeaders()
       },
       7500
     );
 
-    if (!resp.ok) {
-      return { ok: false, error: `HTTP ${resp.status}`, url };
+    // Vinted's api.vinted.co.uk requires an active access_token_web cookie (and optional X-Anon-Id).
+    // If 401 (cold session / expired token), initialize once via HEAD on the site homepage and retry.
+    if (resp.status === 401) {
+      await initVintedSession();
+      resp = await fetchWithTimeout(
+        url,
+        {
+          method: 'GET',
+          credentials: 'include',
+          cache: 'no-store',
+          headers: getVintedHeaders()
+        },
+        7500
+      );
     }
 
-    const json = await resp.json();
-    if (compsCache.size >= COMPS_MAX_CACHE) {
-      const oldestKey = compsCache.keys().next().value;
-      compsCache.delete(oldestKey);
+    if (resp.ok) {
+      const json = await resp.json();
+      if (compsCache.size >= COMPS_MAX_CACHE) {
+        const oldestKey = compsCache.keys().next().value;
+        compsCache.delete(oldestKey);
+      }
+      compsCache.set(cacheKey, { json, ts: Date.now() });
+      return { ok: true, json, url, fromCache: false };
     }
-    compsCache.set(cacheKey, { json, ts: Date.now() });
 
-    return { ok: true, json, url, fromCache: false };
+    // If catalog search failed on a Vinted item page, try Vinted's own similar-items endpoint once
+    if (currentItemId) {
+      const simUrl = `https://api.vinted.co.uk/item-details/more-items/${encodeURIComponent(currentItemId)}?content_source=similar_items&screen=item`;
+      try {
+        const simResp = await fetchWithTimeout(
+          simUrl,
+          { method: 'GET', credentials: 'include', cache: 'no-store', headers: getVintedHeaders() },
+          6000
+        );
+        if (simResp.ok) {
+          const simJson = await simResp.json();
+          return { ok: true, json: simJson, url: simUrl, fromCache: false, source: 'similar_items' };
+        }
+      } catch (_) {
+        // Fall through to original HTTP status
+      }
+    }
+
+    return { ok: false, error: `HTTP ${resp.status}`, url };
   } catch (err) {
     return {
       ok: false,
@@ -298,7 +361,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'FETCH_VINTED_COMPS') {
-    fetchVintedCompsJson(message.query, Boolean(message.forceRefresh), message.condition)
+    fetchVintedCompsJson(
+      message.query,
+      Boolean(message.forceRefresh),
+      message.condition,
+      message.currentItemId || ''
+    )
       .then((res) => sendResponse(res))
       .catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true;

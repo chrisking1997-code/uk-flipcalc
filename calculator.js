@@ -775,24 +775,21 @@
   }
 
   /**
-   * Build Vinted UK's internal catalog JSON API path/URL (used same-origin on vinted.co.uk).
+   * Build Vinted UK's 2026 edge catalog search JSON API URL.
    */
   function buildVintedApiPath(query, condition) {
     const params = new URLSearchParams({
+      search_text: String(query || '').trim(),
       page: '1',
       per_page: '36',
-      search_text: String(query || '').trim(),
       order: 'relevance'
     });
     if (condition === 'new') {
-      params.append('status_ids[]', '6');
-      params.append('status_ids[]', '1');
+      params.set('attribute_ids[status]', '6,1');
     } else if (condition === 'used') {
-      params.append('status_ids[]', '2');
-      params.append('status_ids[]', '3');
-      params.append('status_ids[]', '4');
+      params.set('attribute_ids[status]', '2,3,4');
     }
-    return `/api/v2/catalog/items?${params.toString()}`;
+    return `https://api.vinted.co.uk/svc-catalogue/items?${params.toString()}`;
   }
 
   function buildMarketCompsUrl(rawTitle, marketId, maxWords, condition) {
@@ -804,7 +801,7 @@
   }
 
   /**
-   * Parse Vinted /api/v2/catalog/items JSON response into standardized comp items.
+   * Parse Vinted edge /svc-catalogue/items or /item-details/more-items JSON into standardized comp items.
    * Excludes excludeItemId so the currently viewed Vinted listing doesn't bias its own comps.
    */
   function parseVintedApiItems(json, fallbackCurrency, excludeItemId) {
@@ -813,21 +810,31 @@
     const rawList =
       json && Array.isArray(json.items)
         ? json.items
-        : Array.isArray(json)
-          ? json
-          : [];
+        : json && json.data && Array.isArray(json.data.items)
+          ? json.data.items
+          : Array.isArray(json)
+            ? json
+            : [];
 
     const items = [];
     for (const entry of rawList) {
       if (!entry || typeof entry !== 'object') {
         continue;
       }
-      if (excludeStr && entry.id !== undefined && String(entry.id) === excludeStr) {
+      const entryId = entry.id !== undefined ? entry.id : entry.item_id;
+      if (excludeStr && entryId !== undefined && String(entryId) === excludeStr) {
         continue;
       }
 
       const rawTitle = String(entry.title || '').replace(/\s+/g, ' ').trim();
-      const brandTitle = String(entry.brand_title || '').replace(/\s+/g, ' ').trim();
+      const box = entry.item_box && typeof entry.item_box === 'object' ? entry.item_box : {};
+      const brandTitle = String(
+        entry.brand_title ||
+          (typeof entry.brand === 'string' ? entry.brand : '') ||
+          (entry.content_source === 'search' && box.first_line ? box.first_line : '')
+      )
+        .replace(/\s+/g, ' ')
+        .trim();
       const fullTitle =
         brandTitle && !rawTitle.toLowerCase().includes(brandTitle.toLowerCase())
           ? `${brandTitle} ${rawTitle}`.trim()

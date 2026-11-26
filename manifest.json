@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "UK FlipCalc — Global eBay & Vinted",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Floating profit, ROI, break-even & max-offer calculator with automatic Vinted UK Active & global eBay Sold Comps valuation, live FX conversion, and buy/skip verdicts.",
   "icons": {
     "16": "icons/icon16.png",
@@ -20,6 +20,7 @@
     "https://www.ebay.ca/*",
     "https://www.ebay.it/*",
     "https://www.vinted.co.uk/*",
+    "https://api.vinted.co.uk/*",
     "https://open.er-api.com/*",
     "https://api.frankfurter.app/*"
   ],

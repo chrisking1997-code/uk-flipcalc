@@ -453,48 +453,60 @@
 
     if (market.type === 'vinted') {
       const currentItemId = getCurrentVintedItemId();
-      if (sameOrigin) {
+
+      // Vinted's 2026 edge API lives on api.vinted.co.uk (cross-subdomain from www.vinted.co.uk)
+      // and needs Locale: en-GB + browser session cookies. Routing via background worker avoids
+      // CORS preflight and supports automatic session warmup + similar-items fallback.
+      const bgResp = await sendRuntimeMessage(
+        {
+          type: 'FETCH_VINTED_COMPS',
+          query,
+          condition: cond,
+          forceRefresh: Boolean(forceRefresh),
+          currentItemId
+        },
+        13000
+      );
+      if (bgResp && bgResp.ok && bgResp.json) {
+        const parsed = core.parseVintedApiItems(bgResp.json, market.currency, currentItemId);
+        return { ok: true, items: parsed.items, blocked: false, via: bgResp.source || 'vinted-bg' };
+      }
+
+      // Fallback: if currently on *.vinted.co.uk, try direct page-context fetch with credentials: 'include'
+      if (window.location.hostname.toLowerCase().endsWith('vinted.co.uk')) {
         const apiPath = core.buildVintedApiPath(query, cond);
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 7000);
         try {
           const resp = await fetch(apiPath, {
             method: 'GET',
-            credentials: 'same-origin',
+            credentials: 'include',
             cache: forceRefresh ? 'no-store' : 'default',
-            headers: { Accept: 'application/json, text/plain, */*' },
+            headers: {
+              Accept: 'application/json, text/plain, */*',
+              Locale: 'en-GB'
+            },
             signal: controller.signal
           });
           clearTimeout(timer);
           if (resp.ok) {
             const json = await resp.json();
             const parsed = core.parseVintedApiItems(json, market.currency, currentItemId);
-            return { ok: true, items: parsed.items, blocked: false, via: 'vinted-same-origin' };
+            return { ok: true, items: parsed.items, blocked: false, via: 'vinted-direct' };
           }
-          return { ok: false, error: `HTTP ${resp.status}` };
+          return { ok: false, error: (bgResp && bgResp.error) || `HTTP ${resp.status}` };
         } catch (err) {
           clearTimeout(timer);
           return {
             ok: false,
-            error: err && err.name === 'AbortError' ? 'Timed out' : 'Vinted fetch failed'
+            error:
+              (bgResp && bgResp.error) ||
+              (err && err.name === 'AbortError' ? 'Timed out' : 'Vinted fetch failed')
           };
         }
       }
 
-      const bgResp = await sendRuntimeMessage(
-        {
-          type: 'FETCH_VINTED_COMPS',
-          query,
-          condition: cond,
-          forceRefresh: Boolean(forceRefresh)
-        },
-        12000
-      );
-      if (!bgResp || !bgResp.ok || !bgResp.json) {
-        return { ok: false, error: (bgResp && bgResp.error) || 'Vinted lookup failed' };
-      }
-      const parsed = core.parseVintedApiItems(bgResp.json, market.currency, '');
-      return { ok: true, items: parsed.items, blocked: false, via: 'vinted-bg' };
+      return { ok: false, error: (bgResp && bgResp.error) || 'Vinted lookup failed' };
     }
 
     // eBay market: same-origin HTML fetch first, fallback to background worker
@@ -763,10 +775,10 @@
     const initialDefaultMarketId = SITE === 'vinted' ? 'vinted_uk' : SITE_INFO.marketId || 'ebay_uk';
     const defaultMarket = core.COMPS_MARKETS[initialDefaultMarketId] || core.COMPS_MARKETS.ebay_uk;
     const marketOptionsHtml = Object.values(core.COMPS_MARKETS)
-      .map((m) => {
-        const tag = m.priceType === 'active' ? 'Active' : 'Sold';
-        return `<option value="${m.id}"${m.id === defaultMarket.id ? ' selected' : ''}>${m.name} (${core.getCurrencySymbol(m.currency)} · ${tag})</option>`;
-      })
+      .map(
+        (m) =>
+          `<option value="${m.id}"${m.id === defaultMarket.id ? ' selected' : ''}>${m.name} (${core.getCurrencySymbol(m.currency)})</option>`
+      )
       .join('');
 
     const defaultPlatformId =

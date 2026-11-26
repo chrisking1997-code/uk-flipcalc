@@ -324,7 +324,20 @@ test('buildVintedCompsUrl and buildMarketCompsUrl build Vinted UK catalog URLs w
   assert.match(url, /status_ids%5B%5D=2/);
 });
 
-test('parseVintedApiItems parses Vinted JSON items, prepends missing brand, and excludes current item ID', () => {
+test('buildVintedApiPath targets api.vinted.co.uk/svc-catalogue/items with condition attribute_ids', () => {
+  const usedUrl = core.buildVintedApiPath('Stone Island primaloft coat', 'used');
+  assert.match(usedUrl, /^https:\/\/api\.vinted\.co\.uk\/svc-catalogue\/items\?/);
+  assert.match(usedUrl, /search_text=Stone\+Island\+primaloft\+coat/);
+  assert.match(usedUrl, /attribute_ids%5Bstatus%5D=2%2C3%2C4/);
+
+  const newUrl = core.buildVintedApiPath('Stone Island coat', 'new');
+  assert.match(newUrl, /attribute_ids%5Bstatus%5D=6%2C1/);
+
+  const anyUrl = core.buildVintedApiPath('Stone Island coat', 'any');
+  assert.doesNotMatch(anyUrl, /attribute_ids/);
+});
+
+test('parseVintedApiItems parses legacy and 2026 edge Vinted JSON items, prepends missing brand, and excludes current item ID', () => {
   const mockJson = {
     items: [
       { id: 1001, title: '24 Golf Balls', brand_title: 'Callaway', price: { amount: '15.00', currency_code: 'GBP' } },
@@ -336,6 +349,26 @@ test('parseVintedApiItems parses Vinted JSON items, prepends missing brand, and 
   assert.equal(parsed.items.length, 2);
   assert.deepEqual(parsed.items[0], { title: 'Callaway Supersoft Golf Balls x20', price: 16.5, currency: 'GBP' });
   assert.deepEqual(parsed.items[1], { title: 'Callaway Golf Balls Bundle', price: 18, currency: 'GBP' });
+
+  const edgeJson = {
+    data: {
+      items: [
+        { item_id: 9001, title: 'Primaloft Coat', brand: 'Stone Island', price: { amount: '550.00', currency_code: 'GBP' } },
+        {
+          item_id: 9002,
+          title: 'Primaloft Puffer Jacket',
+          content_source: 'search',
+          item_box: { first_line: 'Stone Island' },
+          price: { amount: '420.00', currency_code: 'GBP' }
+        }
+      ]
+    }
+  };
+  const edgeParsed = core.parseVintedApiItems(edgeJson, 'GBP', '9001');
+  assert.equal(edgeParsed.items.length, 1);
+  assert.deepEqual(edgeParsed.items[0], {
+    title: 'Stone Island Primaloft Puffer Jacket',
+    price: 420,
+    currency: 'GBP'
+  });
 });
-
-
